@@ -197,20 +197,66 @@ test('引用有左边框 + 底色（深色下光靠边框太弱）', () => {
   )
 })
 
-// ── 表格：列宽 + 拆出来横滚 ───────────────────────────────────────────
+// ── 表格：留在正文里，列宽按容器百分比 ───────────────────────────────
 
-test('表格给 table/table 定宽 = 列数 × COL_W（固定列宽才谈得上横滚）', () => {
+test('表格定宽 100%，列宽按列数平分百分比（不再固定 rpx + 外层横滚）', () => {
+  // 为什么改成百分比：表格一旦摘出去单独包 `scroll-view`，wxml 就得按段落循环，
+  // 而 `rich-text` 的 `nodes` 绑 `wx:for` 循环项会渲染成 0 高度空块
+  // （chat 页 `_withMd` 里有逐档实测记录）。所以表格必须留在正文里一次渲染，
+  // 列宽就得跟着容器走 —— 固定 240rpx 在 334px 宽的正文里必然溢出。
   const t = find(md.render('| A | B | C |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n', false), (n) => n.name === 'table')
   assert.ok(t, '表格没渲染')
-  assert.match(styleOf(t), /width:\s*'?\s*720rpx/, `表格宽度应为 3×240，实际 ${styleOf(t)}`)
+  assert.match(styleOf(t), /width:\s*100%/, `表格应占满容器宽度，实际 ${styleOf(t)}`)
   const cells = (t.children[0].children[0].children || []).filter((n) => n.name === 'th')
   assert.equal(cells.length, 3, '表头列数不对')
   for (const c of cells) {
-    assert.match(styleOf(c), /word-break:/, '单元格缺 word-break：长内容会把列撑宽，横滚就错位')
+    assert.match(
+      styleOf(c),
+      /width:\s*33\.3333%/,
+      `每列应平分宽度（3 列 → 33.33%），实际 ${styleOf(c)}`
+    )
+    assert.match(styleOf(c), /word-break:/, '单元格缺 word-break：长内容会把列撑宽，列宽就不等于 100%')
+  }
+  // 反证：把 colPct 写死成 '240rpx' → 上面的百分比断言红。
+  // ⚠️ 这条判据是**纯数据层**的：它证明不了"表格在界面上没溢出"。
+  // 那一半只能靠渲染层量（mp-probe 的 md 探针），别在这里自我安慰。
+})
+
+test('列数多的表每列仍分到宽度，且有 min-width 下限（不会压到每个字一行）', () => {
+  const wide = find(
+    md.render('| A | B | C | D | E | F | G | H |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |\n', false),
+    (n) => n.name === 'table'
+  )
+  assert.ok(wide, '8 列表没渲染')
+  const cells = wide.children[0].children[0].children.filter((n) => n.name === 'th')
+  assert.equal(cells.length, 8)
+  for (const c of cells) {
+    assert.match(styleOf(c), /width:\s*12\.5000%/, `8 列应各占 12.5%，实际 ${styleOf(c)}`)
+    assert.match(styleOf(c), /min-width:\s*120rpx/, '缺 min-width：窄列会被中文长词撑破')
   }
 })
 
-test('splitTables 把表格摘出来，其余原样（rich-text 内部不能滚动，横滚必须靠外层）', () => {
+test('render 的产物自带表格：不需要 splitTables 也能拿到完整 nodes', () => {
+  // 这一条钉住「表格不再被摘出去」这个决定：调用方（chat 页）拿到的就是
+  // 完整的一份 nodes，一个 rich-text 渲染完。哪天有人又把 splitTables 接回去，
+  // 表格就会因为占位符 `{__table:i}` 不是合法节点而在界面上凭空消失。
+  const nodes = md.render('前面\n\n| A |\n| --- |\n| 1 |\n\n后面\n', false)
+  assert.equal(nodes.filter((n) => n.name === 'table').length, 1, 'render 产物里应直接含表格节点')
+  assert.equal(
+    nodes.filter((n) => n.__table !== undefined).length,
+    0,
+    'render 产物里不该有表格占位符 —— 表格留在原地，不摘出去'
+  )
+})
+
+// ⚠️ 下面两条测的是 `splitTables` 这个**函数本身**。它已经**不再被 chat 页使用**
+// （表格留在正文里一次渲染，因为摘出去就必然要 `wx:for` 两层索引，而
+// `rich-text` 的 `nodes` 那样绑会渲染成 0 高度空块）。
+// 函数留着是因为它仍是这层渲染的**备选接法**，改回来时至少有判据守着。
+// 别因为「聊天页不调它」就当成死代码删掉 —— 上面那条
+// 「render 的产物自带表格」才是钉住当前接法的那条。
+
+test('splitTables 把表格摘出来，其余原样（备用接法：表格单独横滚时用）', () => {
   // 反证：把 splitTables 改成直接返回（不拆）→ 这条红。
   const nodes = md.render('前面\n\n| A |\n| --- |\n| 1 |\n\n后面\n', false)
   const { parts, tables } = md.splitTables(nodes)

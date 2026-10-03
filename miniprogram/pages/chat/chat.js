@@ -200,10 +200,28 @@ Page({
     /** 主题。见 sessions 页同名字段的说明。 */
     themeName: 'light',
     themeClass: '',
+    /**
+     * **Markdown 排版结果的顶层索引**：`{ [块 key]: nodes[] }`。
+     *
+     * 为什么正文块上只留 `mdPending`（纯文本），nodes 却要另存一份：
+     * `rich-text` 的 `nodes` **不能绑 `wx:for` 作用域里的变量** ——
+     * 那样它会渲染成高度 0 的空块（正文整段消失，而 data / 单测 / e2e 全绿）。
+     * 实测能绑的只有「顶层字段」与「顶层 map + **一层** `item.key` 索引」，
+     * 两层索引与循环项都不行（`_withMd` 的注释里有逐档结果）。
+     * 所以由 `_commit` 把块上的 `_md` 收进这个 map，wxml 按 `item.key` 取。
+     *
+     * 代价是同一份 nodes 在 data 里存了两处（块上 `_md` + 这个 map）；
+     * `_md` 用 `_` 开头表示"给收集用的中间量"，不进 wxml。
+     */
+    mdBodies: {},
   },
 
   onLoad: function (options) {
     this.client = client.getClient()
+    // 记下 markdown 是按哪个主题排的版：`_retheme` 靠它判断"要不要重排"。
+    // 不在这里记住的话，首次 onShow 会误判成"主题变了"而白重排一次
+    // （那时 blocks 还是空的，等于空跑；不致命但说明状态没初始化对）。
+    this._mdTheme = theme.current()
     theme.applyTo(this)
     var id = decodeURIComponent(options.id || '')
     var title = decodeURIComponent(options.title || id)
@@ -236,9 +254,42 @@ Page({
 
   onShow: function () {
     this._off = this.client.on(this._onEvent.bind(this))
+    this._retheme()
     this._renderBar()
     this.client.listSessions()
     this._maybeLoadHistory()
+  },
+
+  /**
+   * 主题可能在**别的页**被改过（切换按钮在 sessions 页），而 markdown 的颜色是
+   * **烘焙进 nodes 的具体色值**（`rich-text` 不认 `var()`，见 core/markdown.js）。
+   * 所以 `onShow` 必须比一次：只看 `theme.applyTo` 换 class 的话，
+   * 从深色切回浅色再进这一页，页面上是浅色卡片配深色字 —— 而判据全绿。
+   *
+   * 成本是重排全部正文块（典型长回复 1.2ms/块）。只在主题**真的变了**时才做，
+   * 顺带把 `theme.applyTo` 也放进来（`onLoad` 已经调过一次，这里是幂等的）。
+   */
+  _retheme: function () {
+    var name = theme.applyTo(this)
+    if (name === this._mdTheme) return
+    this._mdTheme = name
+    var blocks = this.data.blocks
+    var out = new Array(blocks.length)
+    var changed = false
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].kind !== 'text') {
+        out[i] = blocks[i]
+        continue
+      }
+      // 只重排有正文的块：空正文块重排出来还是空，不必进 setData
+      if (!blocks[i].text) {
+        out[i] = blocks[i]
+        continue
+      }
+      out[i] = this._withMd(Object.assign({}, blocks[i], { _md: null }))
+      changed = true
+    }
+    if (changed) this._commit(out, { noScroll: true })
   },
 
   onHide: function () {
@@ -689,19 +740,38 @@ Page({
    *    把尾部那几个字符**扣住不渲染**，由 `mdPending` 以纯文本补在末尾。
    *    那一小段本来就是标记符号，纯文本显示它与最终态一致。
    *
-   * 派生而不落库：`mdParts` 不进 `store`、不进历史，只有渲染时算。
+   * 派生而不落库：排版结果不进 `store`、不进历史，只有渲染时算。
    * 历史回放与实时都走 `_applyText`，所以两边天然一致。
    *
+   * ── 为什么结果挂 `_md` 而不是直接放块上 ──────────────────────────
+   * `rich-text` 的 `nodes` **不能绑 `wx:for` 作用域里的变量**：那样它会渲染成
+   * 高度 0 的空块，正文在界面上整段消失，而 data、单测、e2e 全绿
+   * （这一页真踩过：截图上 `.reply` 里什么都没有，`nodes` 在 data 里却完全正常）。
+   *
+   * 逐档实测的规律（**只有一条，越写越窄**）：
+   *   `{{probeNodes}}`（纯顶层字段）              → 能渲染
+   *   `{{mdMap[item.key]}}`（顶层 map + 一层索引） → 能渲染
+   *   `{{mdBodies[item.key]}}`（顶层 map + 一层）   → 能渲染
+   *   `{{mdBodies[item.key][pi]}}`（**两层**索引）   → 0 高度
+   *   `{{part}}`（`wx:for` 的循环项）              → 0 高度
+   * 已逐个排除掉的嫌疑：自闭合标签、`wx:key="index"`、`wx:else`、wxss
+   * （`line-height` 读出来是 1.65×字号，说明 wxss 生效了；同一位置换成字面量
+   *  `nodes` 立刻正常，所以不是样式把它压成 0）。
+   *
+   * 所以：**每块只挂一份 nodes、只用一个 `rich-text`**，由 `_commit` 收进顶层
+   * `mdBodies`，wxml 按 `item.key` 取一层。代价是表格不能再单独包
+   * `scroll-view` 横滚（那必然要两层索引），改为列宽按容器百分比分配。
+   * `mdPending` 是纯文本、不是 nodes，留在块上没问题。
+   *
    * @param {object} b text 块（本函数会改它，所以调用方必须传新对象）
-   * @returns {object} 带 mdParts / mdTables / mdPending 的块
+   * @returns {object} 带 _md（nodes）/ mdPending 的块
    */
   _withMd: function (b) {
     if (!b || b.kind !== 'text') return b
-    // 正文还是空的时候不要建任何 md 字段：wxml 判 `mdParts.length` 会走
+    // 正文还是空的时候不要建任何 md 字段：wxml 判 map 里没有这一块时会走
     // 「流式纯文本」那一支，而空文本那一支本来就不该渲染出东西。
     if (!b.text) {
-      b.mdParts = []
-      b.mdTables = []
+      b._md = null
       b.mdPending = ''
       return b
     }
@@ -710,15 +780,18 @@ Page({
         ? // done 了不该还有暂扣尾巴（`renderStream` 在 done 时等价于 render）；
           // 显式走 render 分支是为了**不依赖那条性质**，万一将来缓冲规则改了，
           // 最坏也只是"尾部几个字符被当纯文本显示"，不会丢内容。
-          { split: markdown.splitTables(markdown.render(b.text, theme.current() === 'dark')), pending: '' }
+          { nodes: markdown.render(b.text, theme.current() === 'dark'), pending: '' }
         : markdown.renderStream(b.text, theme.current() === 'dark')
-      b.mdParts = r.split.parts
-      b.mdTables = r.split.tables
+      // **不拆表格**：整块合成一份 nodes，由一个 `rich-text` 一次渲染。
+      // 拆表就意味着「每张表一个 scroll-view + rich-text」，而那必然要在 wxml 里
+      // 按段落循环，于是 `nodes` 绑到 `wx:for` 的循环项 → 渲染成 0 高度空块
+      // （这一页真踩过，详见 data 里 `mdBodies` 的注释）。表格改为列宽按容器
+      // 百分比分配，留在正文里一起渲染（core/markdown.js 的 `tableNode`）。
+      b._md = { nodes: r.nodes }
       b.mdPending = r.pending
     } catch (e) {
-      // 渲染层崩了不能连累正文：退回纯文本那一支（wxml 判 mdParts 为空）
-      b.mdParts = []
-      b.mdTables = []
+      // 渲染层崩了不能连累正文：退回纯文本那一支（wxml 拿不到 nodes 时就走它）
+      b._md = null
       b.mdPending = b.text
     }
     return b
@@ -1151,7 +1224,17 @@ Page({
     var renumbered = this._renumberTurns(blocks)
     var trimmed = this._trim(this._decorate(renumbered.blocks))
     this._reindex(trimmed)
-    this.setData({ blocks: trimmed, turn: renumbered.turn }, function () {
+    // markdown 的 nodes 收进**顶层** map：wxml 要按 `item.key` 取，不能直接
+    // 绑块上的字段（`rich-text` 那样会渲染成 0 高度空块，见 `_withMd` 的说明）。
+    // 每次**整份重建**而不是增量改：块数有上限（MAX_BLOCKS），一份重建的
+    // 成本就是一次遍历，而增量改要额外判断"哪一块被裁掉了"，漏一次就是
+    // 一块永远留在 map 里的孤儿 nodes（会渲染出一段没人能解释的内容）。
+    var bodies = {}
+    for (var i = 0; i < trimmed.length; i++) {
+      var b = trimmed[i]
+      if (b._md) bodies[b.key] = b._md.nodes
+    }
+    this.setData({ blocks: trimmed, turn: renumbered.turn, mdBodies: bodies }, function () {
       // 只在用户还贴着底部时跟随；他往上翻过就让他安静地读。
       // 「加载更早」那一路显式静音：往前插内容时跟底会把他从刚读到的位置甩走。
       if (!(opts && opts.noScroll) && self._autoScroll) self._scrollToBottom()

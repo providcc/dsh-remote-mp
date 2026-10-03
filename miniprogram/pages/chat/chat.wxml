@@ -214,29 +214,37 @@
                这一支不能再是它的 wx:elif（否则它会跟着 steps 一起消失）。
 
                **流式渲染**：每一帧都按 Markdown 排版，不需要等 done。
-               代价是正文里那句「还在流 / 渲染退回」的纯文本分支**只在
-               mdParts 为空时**出现（首帧、或解析异常时），不是"流式期的常态"。
+               代价是正文里那句纯文本分支**只在 mdBodies 为空时**出现
+               （首帧、或解析异常时），不是"流式期的常态"。
                ⚠️ 两支的 `wx:if` 都要**独立**（不能是上一支的 `wx:elif`）：
                上一支 `item.kind==='text'` 成立时，后面按 kind 分支就永远不执行了。 -->
           <view wx:if="{{item.kind === 'text'}}" class="reply-row">
             <view class="reply">
-              <!-- Markdown 渲染。表格在 parts 里是 `{__table:i}` 占位，
-                   那一支要换成 scroll-view —— `rich-text` 内部不能横向滚动，
-                   列数一多表格就会撑破布局（x-markdown-mini 也是这么绕的）。 -->
-              <block wx:if="{{item.mdParts.length}}">
-                <block wx:for="{{item.mdParts}}" wx:key="index" wx:for-item="part">
-                  <scroll-view wx:if="{{part.__table !== undefined}}" class="md-table-scroll" scroll-x="{{true}}">
-                    <rich-text class="md-body" nodes="{{item.mdTables[part.__table]}}" />
-                  </scroll-view>
-                  <rich-text wx:else class="md-body" nodes="{{part}}" />
-                </block>
+              <!-- Markdown 渲染。
+
+                   ⚠️⚠️ `nodes` 必须绑**顶层 map 的一层索引**（`mdBodies[item.key]`），
+                   不能绑 `item.mdParts[i]`、`mdBodies[key][i]` 或 `wx:for` 的循环项 ——
+                   那样 `rich-text` 会渲染成**高度 0 的空块**，界面上正文整段消失，
+                   而 data、单测、e2e 全绿（这一页就踩过：截图上 `.reply` 里什么都没有，
+                   `nodes` 在 data 里却完全正常）。
+                   逐档实测：顶层字段能渲染、顶层 map + 一层索引能渲染、
+                   **两层索引与循环项都是 0 高度**。
+                   已排除的嫌疑：自闭合标签、`wx:key="index"`、`wx:else`、wxss。
+
+                   代价：**表格不能再单独包 `scroll-view` 横滚**（那必然要按段落
+                   两层索引），改为列宽按容器百分比分配、随正文一起渲染
+                   （core/markdown.js 的 `tableNode`）。官方文档确认
+                   `table`/`tr`/`td`/`th` 都在受信任标签里、且 `td` 支持 `width`。
+                   整块**只用一个** `rich-text`** —— 这是能显示出来的前提。 -->
+              <block wx:if="{{mdBodies[item.key].length}}">
+                <rich-text class="md-body" nodes="{{mdBodies[item.key]}}" />
                 <!-- 暂扣尾巴：末尾那几个可能还没闭合的标记符号（`**`/`（` 等）。
                      用纯文本显示 —— 它们本来就是符号，纯文本与最终态一致。
-                     ⚠️ 它必须在 `mdParts` **之后**：暂扣区按定义就是最后一段。 -->
+                     ⚠️ 它必须在正文**之后**：暂扣区按定义就是最后一段。 -->
                 <text wx:if="{{item.mdPending}}" class="md-pending">{{item.mdPending}}</text>
                 <text wx:if="{{!item.done}}" class="caret"></text>
               </block>
-              <!-- 没有 mdParts：首帧（正文刚到、还没排出 nodes）或渲染退回。 -->
+              <!-- 没有 mdBodies：首帧（正文刚到、还没排出 nodes）或渲染退回。 -->
               <block wx:else>
                 <text user-select>{{item.text}}</text><text wx:if="{{!item.done}}" class="caret"></text>
               </block>

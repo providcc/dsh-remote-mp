@@ -330,44 +330,55 @@ function listNode(t, c) {
 }
 
 /**
- * 表格。**列宽固定 + 外层横滚**（调用方用 scroll-view 包）。
+ * 表格。**列宽按容器比例分配**（每列 `100/列数`%），随正文一起渲染。
  *
- * 为什么固定列宽：列数不定时没法按内容分配宽度，而让 `rich-text` 里的
- * `table` 自动布局在真机上宽度不可控。固定 `COL_W` 让「列 = 一列宽」这个
- * 关系成立，滚动位置才稳定。
+ * ── 为什么不再固定列宽 + 外层横滚 ──────────────────────────────────
+ * 原来的做法是「固定 `COL_W` 240rpx，表格摘出来由调用方用 `scroll-view scroll-x` 包」。
+ * 那条路走不通，根因在渲染层而不是表格本身：**`rich-text` 的 `nodes` 不能绑
+ * `wx:for` 作用域里的变量**（绑了会渲染成高度 0 的空块），而「每张表一个
+ * `scroll-view` + `rich-text`」必然要按段落循环 → 必然绑到循环项。
+ * 逐档实测：顶层字段可以，`顶层map[key]` 可以，`顶层map[key][i]` 与
+ * `wx:for` 的循环项都不行（见 chat 页 `_commit` 的注释）。
  *
- * ⚠️ `word-break:break-all` 是必须的：不写的话长单元格内容会把这列撑到
- * 240rpx 之外，整张表的列宽就不等于列数 × COL_W，横滚会错位。
+ * 官方文档确认 `table`/`tr`/`td`/`th` 都在受信任标签里，且 `td` 支持 `width`，
+ * 所以表格可以**留在正文里**。代价是宽表在窄屏上会挤一些 —— 但对「远程看 AI 干活」
+ * 这个场景，能读到的内容比能横滑更重要（横滑在小程序里要先看到表才知道右边还有列）。
+ *
+ * `word-break:break-all` 仍然是必须的：不写的话长单元格会把这一列撑破，
+ * 「每列等宽」就不成立。
  */
-var COL_W = 240
 function tableNode(t, c) {
+  var cols = (t.header || []).length || 1
+  // 用百分比而不是 rpx：容器宽度由页面决定，百分比才跟着变。
+  // `min-width` 给一个下限，避免 8 列以上的表被压到每个字一行。
+  var colPct = (100 / cols).toFixed(4) + '%'
   var rows = []
   var headCells = []
   for (var i = 0; i < (t.header || []).length; i++) {
-    headCells.push(cellNode(t.header[i], c, 'th', true))
+    headCells.push(cellNode(t.header[i], c, 'th', true, colPct))
   }
   rows.push(el('tr', 'display:block;', headCells))
   for (var r = 0; r < (t.rows || []).length; r++) {
     var row = t.rows[r]
     var tds = []
-    for (var k = 0; k < row.length; k++) tds.push(cellNode(row[k], c, 'td', false))
+    for (var k = 0; k < row.length; k++) tds.push(cellNode(row[k], c, 'td', false, colPct))
     rows.push(el('tr', 'display:block;', tds))
   }
   return el(
     'table',
-    'display:block;width:' + (t.header || []).length * COL_W + 'rpx;' +
+    'display:block;width:100%;' +
       'border-collapse:collapse;font-size:25rpx;',
     [el('thead', 'display:block;', [rows[0]]), el('tbody', 'display:block;', rows.slice(1))]
   )
 }
 
-function cellNode(cell, c, tag, isHead) {
+function cellNode(cell, c, tag, isHead, colPct) {
   var pad = '12rpx 16rpx;border-right:2rpx solid ' + c.rule + ';border-bottom:2rpx solid ' + c.rule + ';'
   var style =
-    'display:block;width:' + COL_W + 'rpx;min-width:' + COL_W + 'rpx;box-sizing:border-box;' +
+    'display:block;width:' + colPct + ';min-width:120rpx;box-sizing:border-box;' +
     'padding:12rpx 16rpx;' + pad +
     'word-break:break-all;white-space:normal;vertical-align:top;' +
-    'color:' + (isHead ? c.text : c.text) + ';'
+    'color:' + c.text + ';'
   if (isHead) style += 'font-weight:600;background:' + c.quoteBg + ';'
   return el(tag, style, inlineNodes(cell.tokens, c))
 }
@@ -636,8 +647,9 @@ module.exports = {
   render: render,
   renderStream: renderStream,
   pendingFrom: pendingFrom,
+  // 已不再被 chat 页使用（表格留在正文里一次渲染，见 `tableNode` 的注释）。
+  // 留着是因为它仍是这层渲染的**备选接法**，改回来时 `check-markdown.mjs` 有判据守着。
   splitTables: splitTables,
   PALETTE: PALETTE,
-  ALLOWED: ALLOWED,
-  COL_W: COL_W
+  ALLOWED: ALLOWED
 }
