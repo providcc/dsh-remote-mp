@@ -213,14 +213,14 @@
                从这里开始重新用独立的 wx:if 链：上一支的 steps 已经改成独立 wx:if，
                这一支不能再是它的 wx:elif（否则它会跟着 steps 一起消失）。
 
-               **两支**：mdParts 非空 = 已完成、按 Markdown 渲染；否则 = 还在流，
-               显示原文。分两支而不是一支里切样式，是因为 `rich-text` 与 `<text>`
-               是不同组件，条件渲染比在组件间迁就样式可靠得多。
-               ⚠️ 三支的 `wx:if` 都要**独立**（不能是上一支的 `wx:elif`）：
+               **流式渲染**：每一帧都按 Markdown 排版，不需要等 done。
+               代价是正文里那句「还在流 / 渲染退回」的纯文本分支**只在
+               mdParts 为空时**出现（首帧、或解析异常时），不是"流式期的常态"。
+               ⚠️ 两支的 `wx:if` 都要**独立**（不能是上一支的 `wx:elif`）：
                上一支 `item.kind==='text'` 成立时，后面按 kind 分支就永远不执行了。 -->
           <view wx:if="{{item.kind === 'text'}}" class="reply-row">
             <view class="reply">
-              <!-- 已完成：Markdown 渲染。表格在 parts 里是 `{__table:i}` 占位，
+              <!-- Markdown 渲染。表格在 parts 里是 `{__table:i}` 占位，
                    那一支要换成 scroll-view —— `rich-text` 内部不能横向滚动，
                    列数一多表格就会撑破布局（x-markdown-mini 也是这么绕的）。 -->
               <block wx:if="{{item.mdParts.length}}">
@@ -230,8 +230,13 @@
                   </scroll-view>
                   <rich-text wx:else class="md-body" nodes="{{part}}" />
                 </block>
+                <!-- 暂扣尾巴：末尾那几个可能还没闭合的标记符号（`**`/`（` 等）。
+                     用纯文本显示 —— 它们本来就是符号，纯文本与最终态一致。
+                     ⚠️ 它必须在 `mdParts` **之后**：暂扣区按定义就是最后一段。 -->
+                <text wx:if="{{item.mdPending}}" class="md-pending">{{item.mdPending}}</text>
+                <text wx:if="{{!item.done}}" class="caret"></text>
               </block>
-              <!-- 还在流 / 渲染退回：原文。那一排 `**` 与 `|` 就是流式期该有的样子。 -->
+              <!-- 没有 mdParts：首帧（正文刚到、还没排出 nodes）或渲染退回。 -->
               <block wx:else>
                 <text user-select>{{item.text}}</text><text wx:if="{{!item.done}}" class="caret"></text>
               </block>

@@ -519,6 +519,18 @@
   scrollbar-width: none;
 }
 
+/* 暂扣尾巴（core/markdown.js 的 pending 区）。
+ *
+ * 内容是末尾那几个可能还没闭合的标记符号（`**` / `（` / `~~`），**必须按纯文本原样显示** ——
+ * 它显示的就是原文那几个字符，样式上不能有任何"排版"的处理。
+ * 所以这里显式写 `white-space: pre` 而不是继承 `.reply` 的 `pre-wrap`：
+ * pre-wrap 会把每个标记之间按普通空白排版，而符号之间本来没有空白。
+ */
+.md-pending {
+  white-space: pre;
+  color: var(--td-text-color-primary);
+}
+
 /* 光标：还在写的时候让人知道没结束 */
 .caret {
   display: inline-block;

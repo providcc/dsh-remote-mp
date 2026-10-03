@@ -676,45 +676,50 @@ Page({
   },
 
   /**
-   * 给一个 text 块补上 markdown 渲染结果。
+   * 给一个 text 块补上 markdown 渲染结果（**流式**）。
    *
-   * ── 为什么只在 `done` 时渲染（2026-10-04 定的）────────────────────────
-   * 流式渲染要处理"语法还没闭合"的中间态（刚打出 `**加粗`），那需要一套
-   * 增量解析 + 未闭合回退规则；本页目前不流渲染：**回复还在流的时候显示原文，
-   * `done` 之后一次性切成排版好的**。
+   * ── 流式的两件事 ───────────────────────────────────────────────────
+   * ① **排版**：每帧都把已确定的部分渲染成 nodes。
+   *    成本已量过（128 行、2741 字符的典型长回复）：全量重解析 **1.2ms/帧**，
+   *    setData 单帧峰值 **22KB**（小程序上限 1MB），所以「跟着现有帧节拍
+   *    全量重解析」是可行的 —— 不需要做增量 AST。
    *
-   * 代价要说清：长回复在流完之前是"一大坨带符号的纯文本"，用户会看到 `**` 和 `|`。
-   * 这是明知的取舍 —— 反过来做（流式渲染）会出现"先错后对"的跳变，观感更糟，
-   * 而这一页的主场景恰恰是**长回复**（远程看 AI 干活），跳变次数会很多。
-   * 真要改的话，接入点是 `core/markdown.js` + 一个带 buffer 的增量入口。
+   * ② **不跳变**：未闭合的 `**加粗` 会让文字倒退（实测第 7 帧 `a *粗体`，
+   *    而正确应是 `a **粗体`）。`core/markdown.js` 的 `renderStream()` 负责
+   *    把尾部那几个字符**扣住不渲染**，由 `mdPending` 以纯文本补在末尾。
+   *    那一小段本来就是标记符号，纯文本显示它与最终态一致。
    *
-   * 派生而不落库：`mdNodes` 不进 `store`、不进历史，只有渲染时算。
+   * 派生而不落库：`mdParts` 不进 `store`、不进历史，只有渲染时算。
    * 历史回放与实时都走 `_applyText`，所以两边天然一致。
    *
-   * @param {object} b text 块（会被复制，不改原对象）
-   * @returns {object} 带 mdNodes / mdTables / mdTableAt 的新块
+   * @param {object} b text 块（本函数会改它，所以调用方必须传新对象）
+   * @returns {object} 带 mdParts / mdTables / mdPending 的块
    */
   _withMd: function (b) {
     if (!b || b.kind !== 'text') return b
-    if (!b.done) {
-      // 还在流：`mdNodes` 留空，wxml 那一支退回 `<text>{{item.text}}</text>`
+    // 正文还是空的时候不要建任何 md 字段：wxml 判 `mdParts.length` 会走
+    // 「流式纯文本」那一支，而空文本那一支本来就不该渲染出东西。
+    if (!b.text) {
+      b.mdParts = []
+      b.mdTables = []
+      b.mdPending = ''
       return b
     }
     try {
-      var split = markdown.splitTables(markdown.render(b.text, theme.current() === 'dark'))
-      b.mdParts = split.parts
-      b.mdTables = split.tables
-      // parts 里用 `{__table:i}` 占位，wxml 要把它换成对应的 scroll-view。
-      // 这里顺手编成下标数组，省得 wxml 里做减法。
-      b.mdTableAt = []
-      for (var i = 0; i < split.parts.length; i++) {
-        if (split.parts[i] && split.parts[i].__table !== undefined) b.mdTableAt.push(i)
-      }
+      var r = b.done
+        ? // done 了不该还有暂扣尾巴（`renderStream` 在 done 时等价于 render）；
+          // 显式走 render 分支是为了**不依赖那条性质**，万一将来缓冲规则改了，
+          // 最坏也只是"尾部几个字符被当纯文本显示"，不会丢内容。
+          { split: markdown.splitTables(markdown.render(b.text, theme.current() === 'dark')), pending: '' }
+        : markdown.renderStream(b.text, theme.current() === 'dark')
+      b.mdParts = r.split.parts
+      b.mdTables = r.split.tables
+      b.mdPending = r.pending
     } catch (e) {
       // 渲染层崩了不能连累正文：退回纯文本那一支（wxml 判 mdParts 为空）
       b.mdParts = []
       b.mdTables = []
-      b.mdTableAt = []
+      b.mdPending = b.text
     }
     return b
   },

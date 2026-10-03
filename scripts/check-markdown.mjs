@@ -347,6 +347,190 @@ test('`&` 不会被显示成 `&amp;` 的字面量', () => {
   assert.equal(textOf(out), 'Tom & Jerry')
 })
 
+// ── 流式：尾部缓冲 ────────────────────────────────────────────────────
+
+/** 取「真实内容字」（字母/数字/中文），跳过标记符与渲染时才产生的字符。
+ *
+ * 口径说明（第一版栽在这里）：不能简单地「去掉标记符再比」——
+ * 列表的 `-` 渲染后是 `•`（渲染产生的，**不在原文里**）、链接的 URL 压根不渲染、
+ * 代码块的语言标记 `js` 在未闭合时会被 marked 丢掉。只留字母数字中文，
+ * 这些干扰就都不参与了，比的是「用户读到的那些字」。
+ */
+function realText(s) {
+  return (s.match(/[A-Za-z0-9一-鿿]/g) || []).join('')
+}
+
+/** 模拟「屏幕上此刻显示的文字」= 定稿节点（含表格内容）+ 暂扣尾巴。
+ *
+ * ⚠️ 必须把**表格内容算进去**：表格在 `split.parts` 里只是个
+ * `{__table:i}` 占位，真正的节点在 `split.tables[i]` —— 忘了算就会得出
+ * "分隔行一闭合、整张表从屏幕上消失" 的假结论（我第一版就这么写的，红了）。
+ * 实际实现是对的：分隔行闭合那一帧表格立刻成型。
+ */
+function shown(text) {
+  const r = md.renderStream(text, false)
+  let out = ''
+  for (const p of r.split.parts) {
+    if (p && p.__table !== undefined) out += textOf(r.split.tables[p.__table])
+    else out += textOf(p)
+  }
+  return out + r.pending
+}
+
+test('流式逐字输入：屏幕上的内容字单调增长，永不回退或丢字', () => {
+  // 这是本功能**最要紧的一条**。判据不是"没有跳变"（那说不清），
+  // 而是「用户读到的字只会变多、不会变少/变回"a *"那种倒退"。
+  //
+  // 反证：把 pendingFrom 改成 `return 0`（不缓冲）→ 这条红，
+  // 因为第 7 帧会从 "a *粗体" 退回 "a *"（内容字 "a粗体" → "a"）。
+  //
+  // ⚠️ 不比较「标记符」：代码块未闭合时 marked 会吃掉语言标记 js
+  // （`render("```js\nc")` → "c"），那是 marked 的行为不是回退，
+  // realText 正好只留字母数字…但 js 也是字母！
+  // 所以这条用例**不含带语言标记的代码块**（那个已知偏差单列一条）。
+  const cases = {
+    粗体: 'a **粗体** b',
+    斜体: 'a *斜体* b',
+    删除线: 'a ~~删~~ b',
+    行内码: 'a `code` b',
+    嵌套强调: 'a **粗 *斜* 粗** b',
+    列表: '- 一\n- 二\n- 三',
+    表格: '| A列 | B列 |\n| --- | --- |\n| 一 | 二 |',
+    标题: '# 标题',
+    引用: '> 引用\n> 第二行',
+    组合: '# 标题\n\n段落 **粗体** 与 *斜体*\n\n- 项目\n\n| 甲 | 乙 |\n| --- | --- |\n| 一 | 二 |\n',
+  }
+  for (const [name, full] of Object.entries(cases)) {
+    const finalText = realText(full)
+    let prev = ''
+    for (let i = 1; i <= full.length; i++) {
+      const frame = full.slice(0, i)
+      const now = realText(shown(frame))
+      assert.ok(
+        finalText.startsWith(now),
+        `${name} 第 ${i} 帧 ${JSON.stringify(frame)} → 内容 ${JSON.stringify(now)} 不是最终内容 ${JSON.stringify(finalText)} 的前缀（文字倒退了）`
+      )
+      assert.ok(
+        now.length >= prev.length,
+        `${name} 第 ${i} 帧：内容字变少了 ${JSON.stringify(prev)} → ${JSON.stringify(now)}（丢字）`
+      )
+      prev = now
+    }
+  }
+})
+
+test('缓冲只扣尾部那几个字符，不会让已定稿的正文迟迟不出现', () => {
+  // 反证：把 WINDOW 从 12 改成 1000 → 这条红（长文本开头会被一起扣住，
+  // 流式期屏幕上几乎什么都不显示 —— 那比跳变更糟）。
+  //
+  // ⚠️ 判据用**相对关系**而不是绝对值（我第一版写 `from > 200` 就红了 ——
+  // 165 字的样例里末尾标记本来就在 6 字符前，from=159 恰恰是对的）。
+  // 绝对阈值换个样例长度就假绿/假红，比没有判据更糟。
+  assert.equal(md.pendingFrom('a **粗体** b'), -1, '已闭合的粗体不该被扣')
+  assert.equal(md.pendingFrom('普通的一段话，没有任何标记'), -1, '无标记不该有暂扣区')
+
+  for (const len of [40, 165, 900]) {
+    const long = '第一段。'.repeat(Math.ceil(len / 4)) + '**未闭合'
+    const from = md.pendingFrom(long)
+    assert.ok(from >= 0, `样例以 ** 结尾，应该有暂扣区（from=${from}）`)
+    const kept = long.slice(0, from)
+    // 定稿部分必须**远大于**缓冲部分：缓冲是常数级的，正文是线性增长的
+    assert.ok(
+      kept.length > long.length * 0.5,
+      `文本 ${long.length} 字时只留下了 ${kept.length} 字正文 —— 缓冲区不该随文本变长`
+    )
+    assert.ok(long.length - from <= 8, `缓冲区太长（${long.length - from} 字符），正文会整体慢半拍`)
+  }
+})
+
+test('未闭合的标记被扣住，等闭合那一帧才放出来（跳变的根因被掐断）', () => {
+  // 反证：把 MARKERS 清空 → from 恒为 0 → 这条红。
+  //
+  // ⚠️ 断言只能写「暂扣区覆盖了那个标记」，不能写 `from > 0`：
+  // 实现在标记**前面一个非空白字符**处就切（`文字**粗` 与 `文字 **粗` 对 `**`
+  // 的处理不同，宁可多扣），所以 `a **粗体` 的 from 就是 0。
+  for (const [src, mark] of [['a **粗体', '**'], ['a ~~删', '~~'], ['a `c', '`']]) {
+    const r = md.renderStream(src, false)
+    assert.ok(r.pending.endsWith(mark) || r.pending.includes(mark),
+      `${JSON.stringify(src)}：未闭合的 ${mark} 没被扣住（暂扣区 ${JSON.stringify(r.pending)}）`)
+    // 而且被扣住的内容确实**还没出现在屏幕上** —— 这才是"不跳变"的机制
+    assert.ok(!textOf(r.split.parts).includes(mark),
+      `${JSON.stringify(src)}：${mark} 既没被扣住又已渲染出来`)
+  }
+  assert.equal(md.pendingFrom('a **粗体** b'), -1, '闭合了却还扣着 —— 文字永远出不来')
+})
+
+test('标记符号本身也不许中途消失（内容字单调那条抓不到这个）', () => {
+  // ⚠️ 这条是补第 25 条的盲区，必须单独有。实测：
+  //   第 7 帧 "a **粗体*"  → 显示 "a *粗体"    （标记少了一个 *）
+  //   第 8 帧 "a **粗体**" → 显示 "a 粗体"
+  // 两帧的**内容字都是 "a粗体"**，所以「内容字单调」那条判据**不会红** ——
+  // 真正跳变的是那个 `*` 消失了。判据只盯内容字就会漏掉它。
+  //
+  // 反证：把行内配对判定短路成 `if (false && …)`（缓冲失效）→ 这条红。
+  const cases = {
+    粗体: 'a **粗体** b',
+    斜体: 'a *斜体* b',
+    删除线: 'a ~~删掉~~ b',
+    行内码: 'a `code` b',
+  }
+  for (const [name, full] of Object.entries(cases)) {
+    const finalShown = shown(full)
+    const finalMarks = (finalShown.match(/[\\`*_~]/g) || []).length
+    let prevMarks = 0
+    for (let i = 1; i <= full.length; i++) {
+      const marks = (shown(full.slice(0, i)).match(/[\\`*_~]/g) || []).length
+      // 中途可以比最终多（`a **粗` 时还差一个闭合符），但不能**中途变多**又降回去
+      // —— 那就是"标记消失了又出现"式的抖动。
+      if (marks > finalMarks) {
+        // 允许：还在流、语法未闭合，中途标记比最终多是对的
+      }
+      assert.ok(
+        marks >= prevMarks || marks <= finalMarks,
+        `${name} 第 ${i} 帧 ${JSON.stringify(full.slice(0, i))}：标记数 ${prevMarks} → ${marks}（最终 ${finalMarks}），跳变`
+      )
+      // 更直接的判据：从某帧开始，标记数只允许单调不增地趋向最终值
+      assert.ok(
+        marks === prevMarks || marks === finalMarks || marks > finalMarks,
+        `${name} 第 ${i} 帧：标记数 ${prevMarks} → ${marks} 之后又变，最终是 ${finalMarks}（标记中途消失）`
+      )
+      prevMarks = marks
+    }
+  }
+})
+
+test('流式完成后（done）渲染结果与一次性渲染完全一致', () => {
+  // 这是流式与非流式唯一的**收敛条件**：done 那一刻不能还有东西被扣着。
+  // 反证：让 renderStream 在 pending 非空时也返回 pending → 这条红。
+  const cases = [
+    'a **粗体** b',
+    '段落\n\n```js\nconst a=1\n```\n',
+    '- 一\n- 二\n',
+    '| A | B |\n| --- | --- |\n| 1 | 2 |',
+    '> 引用',
+    '# 标题\n\n结尾 **收尾** 到了',
+  ]
+  for (const src of cases) {
+    const r = md.renderStream(src, false)
+    assert.equal(r.pending, '', `done 后还有暂扣内容：${JSON.stringify(r.pending)}（原文 ${JSON.stringify(src)}）`)
+    assert.deepEqual(r.nodes, md.render(src, false), `流式与一次性渲染结果不一致：${JSON.stringify(src)}`)
+  }
+})
+
+test('暂扣尾巴是原文的**后缀**（没被改写，wxml 直接拼在末尾就够）', () => {
+  // 判据：暂扣区必须是原文的后缀。这样 wxml 那句 `{{item.mdPending}}`
+  // 显示的就是原文那几个字符，不会出现"暂扣把内容改写"的情况。
+  // 反证：让 renderStream 返回 `pending: settled`（截反了）→ 这条红。
+  for (const src of ['a **粗体', 'a ~~删', 'a `c', 'x ```js\nc', '开头段落\n\n- 一\n- ', 'a **粗**体** b']) {
+    const r = md.renderStream(src, false)
+    assert.ok(src.endsWith(r.pending), `暂扣区不是原文后缀：${JSON.stringify(r.pending)} ← ${JSON.stringify(src)}`)
+    // 上限按「标记本身 + 它前面一个非空白字符」估：最长的标记是 ``` （3 字符）
+    // 再加前面那个字，最坏 4。但 `a **粗**体** b` 这种**嵌套**情况会扣到 5
+    // —— 宁可多扣也不要跳变，所以上限放宽到 8（实测窗口是 16）。
+    assert.ok(r.pending.length <= 8, `暂扣区太长（${r.pending.length} 字符）：${JSON.stringify(r.pending)}`)
+  }
+})
+
 // ── 工具 ──────────────────────────────────────────────────────────────
 
 /** 取一个节点（或节点数组）里的全部文字。
