@@ -57,6 +57,8 @@ class Socket {
     this._retry = 0
     this._reconnectTimer = null
     this._openTimer = null
+    /** `sendThenClose` 的那一小段等待窗口；`close()` 负责撤销它（见那里的注释）。 */
+    this._sendThenCloseTimer = null
     /** 本次连接是否收到过 onOpen —— 连接超时判断以它为准，而不是「已绑定」 */
     this._opened = false
     /** 'task' | 'legacy' | null —— 当前实际走的实现路径 */
@@ -133,12 +135,54 @@ class Socket {
     }
   }
 
+  /**
+   * 发一帧然后关闭（一次性告别帧用）。
+   *
+   * 为什么不能直接 `send()` 紧接 `close()`：小程序的 `SocketTask.send` 是
+   * **异步投递**的，紧接着 `close()` 会把还没进发送队列的帧丢掉 ——
+   * 于是「解除配对」这条告别帧主机永远收不到，它那边就仍然显示配对中。
+   *
+   * 这里靠 `onMessage`/`onClose` 的到达时序不靠猜：先发，再等一个**短延迟**
+   * 让投递完成，然后关。延迟取几十毫秒：跨网络发不出去时不值得等更久
+   * （本地状态已经清了，主机那边下次看到连接断开自然会收敛）。
+   */
+  sendThenClose(obj, delayMs) {
+    if (!this._task) return false
+    try {
+      this._task.send({ data: typeof obj === 'string' ? obj : JSON.stringify(obj) })
+    } catch (e) {
+      this.close()
+      return false
+    }
+    this._manualClose = true
+    this._clearOpenTimer()
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer)
+      this._reconnectTimer = null
+    }
+    const wait = typeof delayMs === 'number' ? delayMs : 60
+    this._sendThenCloseTimer = setTimeout(() => {
+      this._sendThenCloseTimer = null
+      try {
+        this._task && this._task.close()
+      } catch (e) {
+        /* ignore */
+      }
+      this._task = null
+    }, wait)
+    return true
+  }
+
   close() {
     this._manualClose = true
     this._clearOpenTimer()
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer)
       this._reconnectTimer = null
+    }
+    if (this._sendThenCloseTimer) {
+      clearTimeout(this._sendThenCloseTimer)
+      this._sendThenCloseTimer = null
     }
     try {
       this._task && this._task.close()

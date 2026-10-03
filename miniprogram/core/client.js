@@ -155,9 +155,27 @@ class DrcClient {
     this._setStatus('idle', '已断开')
   }
 
-  /** 彻底忘记配对（主机每次新配对都会换 PSK）。 */
+  /**
+   * 彻底忘记配对（主机每次新配对都会换 PSK）。
+   *
+   * **必须先向主机告别，再断线。** 只做本地清理的话，主机完全不知情：
+   * 它那边的 `status.json` 仍然显示「配对中」，中继的成员表里也还留着这部手机，
+   * 用户在电脑上看到的与手机上看到的对不上，而且那部手机再也不会回来 ——
+   * 这个状态没有任何东西会把它清掉。
+   *
+   * 走的是中继**已经实现**的 `session-leave`（客户端分支）：中继会把它转成
+   * `peer-left` 发给主机，主机据此知道这个观众走了。不新增协议帧 ——
+   * 帧名是冻结的（F1），而中继那条路本来就在。
+   *
+   * 顺序不能反：帧要靠 socket 发出去，`disconnect()` 之后就发不出了。
+   */
   unpair() {
-    this.disconnect()
+    if (this.sock && this.convId) {
+      this.sock.sendThenClose({ t: 'session-leave', sessionId: this.convId, clientId: this.clientId })
+    } else {
+      this.disconnect()
+    }
+    this.sock = null
     this._forgetPairing()
     this.psk = ''
     this._setStatus('needs-pair', '已解除配对')

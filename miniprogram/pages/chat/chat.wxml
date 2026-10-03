@@ -9,18 +9,16 @@
        模型**弱化显示**：它是一个标签，不是一个可点的控件 —— 主机内核只提供读取，
        既列不出候选也换不了（取证：status.json 的 modelFace = no-list+no-set），
        长得像能点却换不了，用户只能反复点它来判断是不是自己手机坏了。
-       没收到 ev.model 就不显示，而不是留一段空白。 -->
+       没收到 ev.model 就不显示，而不是留一段空白。
+
+       这里**没有**「展开过程」按钮：每个步骤组自己那行就能点开/收起，
+       一层就够；全局再挂一个开关，等于同一个动作有两个地方管，
+       而且长会话里折叠全部会顺手把正在跑的那组也收起来。 -->
   <view class="bar">
     <view class="dot {{barTheme}}"></view>
     <view class="bar-text ellipsis">{{barText}}</view>
     <view class="bar-gap"></view>
     <text wx:if="{{modelName}}" class="bar-model ellipsis">{{modelName}}</text>
-    <view
-      wx:if="{{showSteps && foldable}}"
-      class="bar-btn"
-      hover-class="pressed"
-      hover-stay-time="80"
-      bindtap="onToggleAll">{{expanded ? '收起过程' : '展开过程'}}</view>
     <view
       wx:if="{{running}}"
       class="bar-stop"
@@ -119,7 +117,21 @@
                换成 wx:if 后条件为假就是什么都不渲染。
                留着这段的代价只是几行 wx:if，收益是哪天想看过程改一个常量就回来。 -->
           <view wx:if="{{item.kind === 'steps' && showSteps}}" class="steps">
+            <!-- `plain` = 组内只有 think、一个工具都没调：它只是一行状态。
+                 这种组**不给箭头、不给按压反馈、点了不响应、卡片不渲染** ——
+                 留个可点的东西却展开不出内容，用户会以为还有东西没显示出来。
+                 耗时并进标题（`思考中 4.0s`），不再另起一行重复说一遍。 -->
             <view
+              wx:if="{{item.plain}}"
+              class="steps-bar steps-bar-plain">
+              <view class="steps-mark {{item.live ? 'live' : 'done'}}">
+                <text wx:if="{{!item.live}}">✓</text>
+              </view>
+              <view class="steps-label {{item.live ? 'live' : ''}}">{{item.label}}</view>
+            </view>
+
+            <view
+              wx:else
               class="steps-bar"
               hover-class="pressed"
               hover-stay-time="80"
@@ -132,7 +144,7 @@
               <view class="steps-chev">{{item.open ? '⌄' : '›'}}</view>
             </view>
 
-            <view wx:if="{{item.open}}" class="steps-card">
+            <view wx:if="{{item.open && !item.plain}}" class="steps-card">
               <!-- 过程窗口：**限高 + 组内自己滚到最新**。
                    展开一个跑了 8 步的组不该把整页正文顶出屏幕 —— 所以这里是个有界的窗口，
                    而不是让它无限长高。scroll-into-view 指向组尾那一条，只有**还在跑**的组

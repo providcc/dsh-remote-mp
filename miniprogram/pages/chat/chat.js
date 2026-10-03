@@ -104,30 +104,39 @@ function connTheme(status) {
  *
  * 「还在跑」只看**组内**有没有未完成的条目，不看全局 running ——
  * 否则前面那些早已封口的老组也会跟着显示"正在执行"。
+ *
+ * `plain` = 组内只有 think、**一个工具都没调**。这种组没什么可展开的，
+ * 所以它只该是一行状态：不给箭头、不给按压反馈、点了不响应、卡片不渲染。
+ * 反过来做（留个箭头点开，里面只有一行"思考中 4.0s"）是在骗人 ——
+ * 用户会以为里面还有东西没显示出来。
  */
 function decorateSteps(g) {
   var tools = 0
   var thinkMs = 0
   var live = false
+  var now = Date.now()
   for (var i = 0; i < g.items.length; i++) {
     var it = g.items[i]
     if (it.type === 'tool') {
       tools += 1
       if (it.phase !== 'completed' && it.phase !== 'failed') live = true
     } else {
+      // 还在跑的那条 think 没有 ms（要等它结束才记），这里现算，
+      // 否则标题里的耗时会停在 0，直到这一条收尾才跳一下。
+      thinkMs += it.done ? it.ms || 0 : now - it.startedAt
       if (!it.done) live = true
-      thinkMs += it.ms || 0
     }
   }
   var c = copyBlock(g)
   c.tools = tools
   c.thinkMs = thinkMs
   c.live = live
+  c.plain = tools ? 0 : 1
   // 组内自动滚的落点（对应 wxml 里 `id="s{{it.key}}"`）。
   // **只给还在跑的组**：跑完的组不给，否则用户回看老组时，每来一条新内容
   // 就被拽回组尾，根本读不了。live 变 false 时置空，滚动自然停住。
   c.tailId = live && g.items.length ? 's' + g.items[g.items.length - 1].key : ''
-  if (live) c.label = tools ? '正在执行 ' + tools + ' 个步骤' : '思考中'
+  if (live) c.label = tools ? '正在执行 ' + tools + ' 个步骤' : '思考中 ' + fmtMs(thinkMs)
   else if (tools) c.label = '已完成 ' + tools + ' 个步骤'
   else c.label = '思考了 ' + fmtMs(thinkMs)
   return c
@@ -153,7 +162,6 @@ Page({
     /** 顶栏：连接状态。模型（`modelName`）跟在它后面同一行，运行态由步骤组的实时标签说 */
     barText: '',
     barTheme: 'default',
-    foldable: 0,
     /**
      * 当前模型（`ev.model` 的原始字段）。**只读，不假装能切。**
      *
@@ -167,11 +175,8 @@ Page({
      * 「超长就省略」的表达力，交给它自己判断就会出现「有的截断有的不截」。
      */
     modelName: '',
-    /** 全局「展开过程」：之后新开的步骤组会继承这个状态 */
-    expanded: false,
     /**
      * 过程块渲不渲染。见文件头 SHOW_STEPS 的说明：**数据照落，只是不显示**。
-     * 顶栏的「展开过程」按钮与 wxml 里 steps 分支都看这一个字段。
      */
     showSteps: SHOW_STEPS,
     /**
@@ -717,7 +722,9 @@ Page({
       // 两个字段的来源事件不同（args 在参数帧、result 在收尾帧），所以都要「有则更新」。
       args: p.argsPreview || (prev && prev.args) || '',
       result: finished ? p.resultPreview || '' : (prev && prev.result) || '',
-      open: prev ? prev.open : !!this.data.expanded,
+      // 组内某一步的详情**默认收起**：参数与结果往往很长，铺开会让过程卡变成正文。
+      // 以前这里跟着全局「展开过程」，那个按钮删了之后就没有"全局意图"可跟随了。
+      open: prev ? prev.open : false,
       preview: '',
     }
     item.preview = firstLine(item.result)
@@ -907,7 +914,10 @@ Page({
       key: 'x' + this._counter++,
       kind: 'steps',
       items: [item],
-      open: forceOpen === undefined ? !!this.data.expanded : forceOpen,
+      // `forceOpen` 就是「实时 or 历史」：实时新组展开（能看见工具在跑什么），
+      // 历史回放收起（一屏全是过程就没法读正文了）。两个调用点都显式传值，
+      // 不再有"缺省等于全局开关"这条隐含约定 —— 那个开关已经删了。
+      open: !!forceOpen,
       closed: false,
     })
     return out
@@ -996,7 +1006,12 @@ Page({
     return !!tail && tail.key === key
   },
 
-  /** 思考的秒数每秒走一格，让「在动」这件事可见（只有队尾那一条需要动） */
+  /**
+   * 思考的秒数每秒走一格，让「在动」这件事可见（只有队尾那一条需要动）。
+   *
+   * 整个组重新派生一次而不是只改 `msText`：`plain` 组的耗时写在**标题**里
+   * （组内那行不渲染），只更新组内条目的话标题会一直停在 0。
+   */
   _startThinkTick: function () {
     if (this._thinkTimer) return
     var self = this
@@ -1009,7 +1024,13 @@ Page({
       var ii = items.length - 1
       var it = items[ii]
       if (!it || it.type !== 'think' || it.done) return
-      self.setData({ ['blocks[' + bi + '].items[' + ii + '].msText']: fmtMs(Date.now() - it.startedAt) })
+      var head = copyBlock(items[ii])
+      head.msText = fmtMs(Date.now() - it.startedAt)
+      var nextItems = items.slice()
+      nextItems[ii] = head
+      var g2 = copyBlock(g)
+      g2.items = nextItems
+      self.setData({ ['blocks[' + bi + ']']: decorateSteps(g2) })
     }, THINK_TICK_MS)
   },
 
@@ -1037,19 +1058,6 @@ Page({
     var g = this.data.blocks[bi]
     if (!g || g.kind !== 'steps' || !g.items[ii]) return
     this.setData({ ['blocks[' + bi + '].items[' + ii + '].open']: !g.items[ii].open })
-    this._afterFold()
-  },
-
-  /** 一键展开/收起全部步骤组：长会话里这是「我只想看结论」的那一下 */
-  onToggleAll: function () {
-    var open = !this.data.expanded
-    var blocks = this.data.blocks.map(function (b) {
-      if (b.kind !== 'steps') return b
-      var c = copyBlock(b)
-      c.open = open
-      return c
-    })
-    this.setData({ expanded: open, blocks: blocks })
     this._afterFold()
   },
 
@@ -1087,11 +1095,7 @@ Page({
     var renumbered = this._renumberTurns(blocks)
     var trimmed = this._trim(this._decorate(renumbered.blocks))
     this._reindex(trimmed)
-    var foldable = 0
-    for (var i = 0; i < trimmed.length; i++) {
-      if (trimmed[i].kind === 'steps' && trimmed[i].tools > 0) foldable++
-    }
-    this.setData({ blocks: trimmed, foldable: foldable, turn: renumbered.turn }, function () {
+    this.setData({ blocks: trimmed, turn: renumbered.turn }, function () {
       // 只在用户还贴着底部时跟随；他往上翻过就让他安静地读。
       // 「加载更早」那一路显式静音：往前插内容时跟底会把他从刚读到的位置甩走。
       if (!(opts && opts.noScroll) && self._autoScroll) self._scrollToBottom()

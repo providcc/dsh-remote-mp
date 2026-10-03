@@ -64,19 +64,6 @@
   color: var(--td-text-color-placeholder);
 }
 
-/* 次要动作用胶囊，主动作（中断）用圆钮 —— 参考图里右侧就是一组圆形按钮 */
-.bar-btn {
-  flex: 0 0 auto;
-  font-size: 24rpx;
-  line-height: 48rpx;
-  height: 48rpx;
-  padding: 0 22rpx;
-  border-radius: 999rpx;
-  background: var(--td-bg-color-secondarycontainer);
-  color: var(--td-text-color-secondary);
-  margin-left: 12rpx;
-}
-
 .bar-stop {
   flex: 0 0 auto;
   width: 56rpx;
@@ -261,6 +248,13 @@
   display: flex;
   align-items: center;
   padding: 10rpx 8rpx 10rpx 0;
+}
+
+/* 只有 think、没有工具的组：纯状态行。
+   不加 hover 也不绑手势（wxml 里那一支就没有 bindtap），所以这里只要
+   保证左右留白跟可点那支一致，切换时标题不会横向跳。 */
+.steps-bar-plain {
+  padding-right: 0;
 }
 
 .steps-mark {
