@@ -41,6 +41,7 @@ class DrcClient {
     this.kH2C = null
     this.sessions = []
     this.keepAwake = null
+    this.model = null
     this.clientId = ''
     this.sock = null
 
@@ -170,6 +171,8 @@ class DrcClient {
     this._resume = null
     this.sessions = []
     this.keepAwake = null
+    // 断线后必须清掉：留着会显示上一个主机的模型，而那看着像"现在在用这个模型"。
+    this.model = null
     this._decryptFails = 0
     // 还挂着的回执类请求不会有回音了：就地结算掉，否则页面的「历史读取中」会一直转
     this._settleWaiters(null)
@@ -201,13 +204,12 @@ class DrcClient {
     return this.sock ? this.sock.send(frame) : false
   }
 
-  /** 加密并发送一个 payload 给主机。 */
+  /** 加密并发送一个 payload 给主机。`cmdId` 由调用点自己分配（回执要按它结算）。 */
   sendCmd(cmd) {
     if (!this.isPaired() || !this.sock) {
       this.emit({ kind: 'error', message: '尚未配对，无法发送指令' })
       return false
     }
-    if (!cmd.cmdId) cmd.cmdId = this.newCmdId()
     var pairing = this._resume || { psk: this.psk, convId: this.convId, nonceCounter: 0 }
     var nonce = store.nextNonceFor(pairing)
     var rec = codec.seal(this.kC2H, cmd, nonce)
@@ -251,9 +253,6 @@ class DrcClient {
         this._forgetPairing()
         this._setStatus('needs-pair', '主机已断开，请重新配对')
         return
-      case 'peer-joined':
-        this.emit({ kind: 'notice', text: '新的客户端加入了会话' })
-        return
       case 'error':
         if (f.code === 'unknown_session') {
           this._forgetPairing()
@@ -268,7 +267,8 @@ class DrcClient {
         this._onEncrypted(f)
         return
       case 'enc-batch':
-        // 协议里有定义（批量帧），主机当前没发，但收到时必须能解
+        // 中继会把主机发出的批量帧原样转发（server.forwardEncBatch），所以这条
+        // 路径是活的：逐条解开当普通 enc 处理。
         if (Array.isArray(f.items)) {
           for (var i = 0; i < f.items.length; i++) {
             this._onEncrypted({ sessionId: f.sessionId, ciphertext: f.items[i].ciphertext })
@@ -372,6 +372,11 @@ class DrcClient {
       }
     } else if (payload.t === 'ev.keep_awake_state') {
       this.keepAwake = payload
+    } else if (payload.t === 'ev.model') {
+      // 模型是全局的（不带 sessionId），与防休眠同一层簿记。
+      // **原样存下整帧**，尤其 canSwitch：页面要靠它决定下拉是���点还是置灰，
+      // 自己在小程序里推断会出现「点了没反应」。
+      this.model = payload
     }
     this.emit({ kind: 'payload', payload: payload })
   }

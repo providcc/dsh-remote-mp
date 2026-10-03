@@ -148,10 +148,6 @@ class Socket {
     this._task = null
   }
 
-  isOpen() {
-    return !!this._task
-  }
-
   /** 供界面显示当前走的是哪条实现路径 */
   transport() {
     return this._mode
@@ -291,4 +287,4 @@ function createSocket(opts) {
   return new Socket(opts)
 }
 
-module.exports = { createSocket: createSocket, CONNECT_TIMEOUT_MS: CONNECT_TIMEOUT_MS }
+module.exports = { createSocket: createSocket }

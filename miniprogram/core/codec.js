@@ -212,6 +212,8 @@ function randomId() {
 }
 
 module.exports = {
+  // vendored nacl 直接暴露：e2e/protocol.test.mjs 拿它和 npm tweetnacl、node:crypto
+  // 做三方对拍（小程序那份必须与另两侧逐字节相同）。小程序自身不直接调它。
   nacl: nacl,
   stringToBytes: stringToBytes,
   bytesToString: bytesToString,

@@ -233,34 +233,11 @@
   font-weight: 500;
 }
 
+/* 主机卡里最后一行：下边距交给 .host 的padding，这里保持 0 */
 .host-sub {
   margin: 12rpx 0 0 30rpx;
   font-size: 24rpx;
   color: var(--td-text-color-secondary, #5c6470);
-}
-
-.host-divider {
-  height: 2rpx;
-  margin: 26rpx 0;
-  background: var(--td-component-border, #dcdcdc);
-}
-
-.host-keep {
-  display: flex;
-  align-items: center;
-}
-
-.host-keep-main {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.keep-title {
-  font-size: 28rpx;
-}
-
-.keep-desc {
-  margin-top: 4rpx;
 }
 
 /* ── 会话列表 ───────────────────────────────────────────────────── */

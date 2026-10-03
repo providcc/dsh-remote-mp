@@ -40,10 +40,28 @@
 }
 
 .bar-text {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 26rpx;
   color: var(--td-text-color-secondary);
+}
+
+/* 连接状态与模型之间的弹性空隙。模型不是按钮，**不能**做成胶囊：
+   胶囊 + 手势反馈这套语言就是在说"这里能点"，而它换不了模型。 */
+.bar-gap {
+  flex: 1 1 auto;
+  min-width: 16rpx;
+}
+
+/* 当前模型：顶栏里的一段小字。
+   刻意弱化 —— 颜色比状态文字还浅，字号更小，没有底色、没有边框、没有按压态。
+   主机内核只提供读取（modelFace = no-list+no-set），它回答的是"现在跑的是什么"，
+   不是"你能改什么"。模型名长度不可控，所以限宽 + ellipsis，不让它把右侧按钮挤走。 */
+.bar-model {
+  flex: 0 1 auto;
+  max-width: 260rpx;
+  font-size: 22rpx;
+  color: var(--td-text-color-placeholder);
 }
 
 /* 次要动作用胶囊，主动作（中断）用圆钮 —— 参考图里右侧就是一组圆形按钮 */
@@ -436,13 +454,14 @@
 }
 
 /* ── 回复正文：靠左的卡片气泡 ───────────────────────────────────────
-   为什么给它一个容器：旧版它和上面的指令块都是"通栏 + 浅底"，两者之间没有
-   图形落差，一屏读下来是一片糊的。现在它有自己的边界（白底 + 细边 + 大圆角），
-   和右边那条实心指令形成figure/ground 的对照 —— 谁是"页面主体"一目了然。
+   为什么给它一个容器：它和右边那条实心指令之间要有图形落差，
+   否则一屏读下来是一片糊。它有自己的边界（容器底色 + 细边 + 大圆角），
+   谁是"页面主体"一目了然。
 
-   为什么 max-width 给 94% 而不是 100%：留 6% 的缝，长回复也仍然看得出"它靠左"；
-   6% 在 375pt 屏上是 20px，几乎不损失可读宽度（长文才是这一页的主体）。
-   左上车削平的角是同一套"尾巴朝向说话人"的语言，和用户气泡正好镜像。 */
+   宽度**与上面的过程组一致（都是通栏）**：这一页是"远程看AI 干活"，
+   正文和过程是同一条信息流的同级内容 —— 窄一档的正文会让长回复被
+   反复折行，读起来比过程卡还挤。左右对齐由 padding 统一负责。
+   左上车削平的角是"尾巴朝向说话人"的语言，和右边用户气泡正好镜像。 */
 .reply-row {
   display: flex;
   justify-content: flex-start;
@@ -450,7 +469,8 @@
 }
 
 .reply {
-  max-width: 94%;
+  width: 100%;
+  box-sizing: border-box;
   padding: 22rpx 26rpx;
   border-radius: 8rpx 26rpx 26rpx 26rpx;
   background: var(--td-bg-color-container);
@@ -548,6 +568,19 @@
   font-size: 30rpx;
   font-weight: 600;
   color: var(--td-text-color-primary);
+}
+
+/* 审批卡的本地倒数。最后 20 秒转成警示色 —— 那 20 秒是「再不点就自动拒绝」，
+   颜色本身就是信息，不该只靠一个数字在走。 */
+.panel-timer {
+  margin-left: auto;
+  font-size: 24rpx;
+  font-variant-numeric: tabular-nums;
+  color: var(--td-text-color-secondary);
+}
+
+.panel-timer.urgent {
+  color: var(--td-error-color);
 }
 
 .row {
@@ -685,7 +718,7 @@
   margin-top: 4rpx;
 }
 
-/* ── 输入区：胶囊 + 圆形发送键 ────────────────────────────────────── */
+/* ── 输入区：胶囊 + 文字发送按钮 ──────────────────────────────────── */
 .composer {
   flex: 0 0 auto;
   display: flex;
@@ -719,11 +752,14 @@
   color: var(--td-text-color-placeholder);
 }
 
+/* 发送按钮：文字按钮，不画图标。
+   圆形键配 CSS 三角的那个版本，箭头在深色底上又小又偏，真正要靠眼睛确认
+   "这个圆是能点的还是只是个装饰"；两个字把这件事说完了。 */
 .composer-send {
   flex: 0 0 auto;
-  width: 88rpx;
   height: 88rpx;
-  border-radius: 50%;
+  padding: 0 32rpx;
+  border-radius: 999rpx;
   background: var(--td-brand-color);
   display: flex;
   align-items: center;
@@ -735,15 +771,13 @@
   background: var(--td-bg-color-secondarycontainer);
 }
 
-/* 发送箭头：CSS 画的实心上三角（border-bottom 有颜色 = 尖朝上），不引图标字体 */
-.send-arrow {
-  width: 0;
-  height: 0;
-  border-left: 14rpx solid transparent;
-  border-right: 14rpx solid transparent;
-  border-bottom: 22rpx solid var(--td-text-color-anti);
+.send-label {
+  font-size: 28rpx;
+  line-height: 1;
+  font-weight: 500;
+  color: var(--td-text-color-anti);
 }
 
-.composer-send.off .send-arrow {
-  border-bottom-color: var(--td-text-color-placeholder);
+.composer-send.off .send-label {
+  color: var(--td-text-color-placeholder);
 }

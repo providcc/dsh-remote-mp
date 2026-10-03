@@ -2,12 +2,19 @@
      小程序默认不会因为点到别处而收键盘，键盘会一直盖住半屏。 -->
 <view class="chat-wrap {{themeClass}}" bindtap="onTapBlank">
 
-  <!-- 顶栏：这一页的「窗口控制条」—— 运行状态与中断。
-       过程块默认不显示（见 chat.js 的 SHOW_STEPS），所以没有「展开过程」；
-       中断放这里而不是输入区：键盘弹起时输入区会被顶走，而中断恰恰是那时候最想按的。 -->
+  <!-- 顶栏：这一页的「窗口控制条」—— 连接状态、当前模型与中断。
+       连接状态在最左边，因为它颜色有语义（绿/灰/红）且**不可点**，用户扫一眼就知道
+       通没通；模型紧跟在状态文字后面，同属"当前处于什么状态"，两件事挤在一行里
+       比各占一行更省竖向空间，横向也放得下。
+       模型**弱化显示**：它是一个标签，不是一个可点的控件 —— 主机内核只提供读取，
+       既列不出候选也换不了（取证：status.json 的 modelFace = no-list+no-set），
+       长得像能点却换不了，用户只能反复点它来判断是不是自己手机坏了。
+       没收到 ev.model 就不显示，而不是留一段空白。 -->
   <view class="bar">
-    <view class="dot {{barTheme}} {{running ? 'blink' : ''}}"></view>
+    <view class="dot {{barTheme}}"></view>
     <view class="bar-text ellipsis">{{barText}}</view>
+    <view class="bar-gap"></view>
+    <text wx:if="{{modelName}}" class="bar-model ellipsis">{{modelName}}</text>
     <view
       wx:if="{{showSteps && foldable}}"
       class="bar-btn"
@@ -188,8 +195,9 @@
             </view>
           </view>
 
-          <!-- 回复正文：靠左的卡片气泡。它才是这页的主体，所以只留 6% 的缝 ——
-               足够让人看出它靠左，又几乎不损失长文的可读宽度。
+          <!-- 回复正文：靠左的卡片气泡。宽度与上面的过程组一致（都是通栏）——
+               这一页是"远程看 AI 干活"，正文和过程是同一条信息流的同级内容，
+               窄一档会让长回复被反复折行。左右对齐由 .pad 的 padding 统一负责。
                从这里开始重新用独立的 wx:if 链：上一支的 steps 已经改成独立 wx:if，
                这一支不能再是它的 wx:elif（否则它会跟着 steps 一起消失）。 -->
           <view wx:if="{{item.kind === 'text'}}" class="reply-row">
@@ -214,7 +222,8 @@
     </view>
   </scroll-view>
 
-  <!-- 用户往上回看过：给一条回到最新的路，但不打扰他 -->
+  <!-- 用户往上回看过：给一条回到最新的路，但不打扰他。
+       有审批/提问浮层时它让位 —— 两者都浮在输入区上方，不让位就会压在一起 -->
   <view
     wx:if="{{!atBottom && !pendingPermission && !pendingQuestion}}"
     class="jump"
@@ -230,6 +239,11 @@
     <view class="panel-head">
       <view class="panel-flag"></view>
       <view class="panel-title">需要审批</view>
+      <!-- 本地倒数。主机那边 180 秒无操作会**自动拒绝** ——
+           不让用户看见这个时间走完，他就不知道自己点的按钮什么时候会作废。 -->
+      <view wx:if="{{pendingPermission.remainSec > 0}}" class="panel-timer {{pendingPermission.remainSec <= 20 ? 'urgent' : ''}}">
+        {{pendingPermission.remainSec}}s
+      </view>
     </view>
 
     <view>
@@ -296,7 +310,7 @@
     </view>
   </view>
 
-  <!-- 输入区：胶囊输入框 + 右侧圆形发送键。
+  <!-- 输入区：胶囊输入框 + 右侧「发送」文字按钮。
        catchtap：点输入框本身不该被外层当成"点了空白"而收键盘 -->
   <view class="composer" catchtap="onNoop">
     <view class="composer-pill">
@@ -317,7 +331,7 @@
       hover-class="{{inputText ? 'pressed' : ''}}"
       hover-stay-time="80"
       bindtap="onSend">
-      <view class="send-arrow"></view>
+      <text class="send-label">发送</text>
     </view>
   </view>
 </view>

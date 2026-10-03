@@ -11,7 +11,6 @@ var codec = require('./codec.js')
 var KEY_PAIRING = 'drc.pairing.v1'
 var KEY_INSTALL = 'drc.installId'
 var KEY_SERVER = 'drc.serverUrl'
-var KEY_KEEPAWAKE = 'drc.keepAwakePref'
 
 function read(key, fallback) {
   try {
@@ -98,14 +97,6 @@ function setServerUrl(u) {
   return write(KEY_SERVER, u)
 }
 
-function keepAwakePref() {
-  return read(KEY_KEEPAWAKE, null)
-}
-
-function setKeepAwakePref(v) {
-  return write(KEY_KEEPAWAKE, v)
-}
-
 module.exports = {
   installId: installId,
   loadPairing: loadPairing,
@@ -114,6 +105,4 @@ module.exports = {
   nextNonceFor: nextNonceFor,
   serverUrl: serverUrl,
   setServerUrl: setServerUrl,
-  keepAwakePref: keepAwakePref,
-  setKeepAwakePref: setKeepAwakePref,
 }

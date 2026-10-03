@@ -72,9 +72,6 @@ Page({
     statusLabel: '未连接',
     statusTheme: 'default',
     hostLabel: '',
-    hostId: '',
-    keepAwakeOn: false,
-    keepAwakeText: '',
     /** 正在连/正在配对：主机卡上要有可见的动静，别让用户以为卡死了 */
     connecting: false,
     /** 被过滤掉的归档会话数；>0 时列表底部补一句说明 */
@@ -210,12 +207,8 @@ Page({
 
   _sync: function () {
     this._renderStatus(this.client.status, this.client.statusText)
-    this._renderKeepAwake(this.client.keepAwake)
     this._renderSessions(this.client.sessions)
-    this.setData({
-      hostLabel: this.client.hostLabel,
-      hostId: this.client.hostId,
-    })
+    this.setData({ hostLabel: this.client.hostLabel })
   },
 
   _renderStatus: function (status, text) {
@@ -226,17 +219,6 @@ Page({
       statusLabel: v.label,
       statusTheme: v.theme,
       connecting: status === 'connecting' || status === 'pairing',
-    })
-  },
-
-  _renderKeepAwake: function (ka) {
-    if (!ka) {
-      this.setData({ keepAwakeOn: false, keepAwakeText: '运行中保持主机不睡' })
-      return
-    }
-    this.setData({
-      keepAwakeOn: !!ka.enabled,
-      keepAwakeText: (ka.active ? '当前持锁中' : '当前未持锁') + (ka.backend ? ' · ' + ka.backend : ''),
     })
   },
 
@@ -282,12 +264,6 @@ Page({
     wx.navigateTo({
       url: '/pages/chat/chat?id=' + encodeURIComponent(id) + '&title=' + encodeURIComponent(title),
     })
-  },
-
-  onToggleKeepAwake: function (e) {
-    var on = !!(e.detail && e.detail.value)
-    this.client.setKeepAwake(on, on ? 600 : undefined)
-    wx.showToast({ title: on ? '已开启防休眠' : '已关闭防休眠', icon: 'none' })
   },
 
   /**
@@ -424,18 +400,10 @@ Page({
     wx.showToast({ title: '已读取密钥，请输入配对码', icon: 'none' })
   },
 
-  onServerInput: function (e) {
-    this.setData({ server: e.detail.value })
-  },
-
   onTokenInput: function (e) {
     // 只留数字，最多 6 位
     var v = String((e.detail && e.detail.value) || '').replace(/\D/g, '').slice(0, 6)
     this.setData({ token: v })
-  },
-
-  onPskInput: function (e) {
-    this.setData({ psk: e.detail.value, hasPsk: !!e.detail.value })
   },
 
   // ── 配对 ──────────────────────────────────────────────────────────

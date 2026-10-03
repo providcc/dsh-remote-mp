@@ -188,6 +188,11 @@ const FG_ON = {
   'pages/chat/chat.wxss': {
     '.user-text': '.user', // 用户气泡里的白字，压蓝底
     '.opt-check': '.opt-on .opt-tick', // 选项勾里的 ✓，压选中态的蓝圆点
+    // 发送按钮的白字压蓝底。文字与背景分在两条规则里（文字在 .send-label，
+    // 底色在 .composer-send），所以要在这里登记 —— 否则检查器会退化成
+    // "页面底"，把 #ffffff on #ffffff 报成 1:1 的假红。
+    '.send-label': '.composer-send',
+    '.composer-send.off .send-label': '.composer-send.off',
   },
   'pages/sessions/sessions.wxss': {},
 }

@@ -14,7 +14,13 @@
  */
 'use strict'
 
-/** 各平台宿主对象名，按可能性排序（微信 / 支付宝 / 抖音 / QQ / 百度 / 京东）。 */
+/**
+ * 各平台宿主对象名，按可能性排序（微信 / 支付宝 / 抖音 / QQ / 百度 / 京东）。
+ *
+ * 这不是「以后也许要支持」——真机上报过缺 API 的容器，而不同厂商的容器
+ * 提供的全局对象名确实不同（`my` / `tt` / `qq` / `swan` / `jd`）。
+ * 认错了名字就会把「有 WebSocket 能力」误判成「没有」。
+ */
 var HOST_NAMES = ['wx', 'my', 'tt', 'qq', 'swan', 'jd']
 
 /** 取当前宿主对象；取不到返回 null。 */
@@ -40,37 +46,16 @@ function has(api, name) {
   }
 }
 
-function call(api, name) {
-  try {
-    return has(api, name) ? api[name]() : undefined
-  } catch (e) {
-    return undefined
-  }
-}
-
 /** 原始采集（probe 的缓存包装在外层）。 */
 function collect() {
   var host = hostApi()
   var api = host ? host.api : null
-  var info = call(api, 'getSystemInfoSync') || {}
-
-  var socketNames = []
-  try {
-    if (api) {
-      var keys = Object.keys(api)
-      for (var i = 0; i < keys.length && socketNames.length < 12; i++) {
-        if (/socket/i.test(keys[i])) socketNames.push(keys[i])
-      }
-    }
-  } catch (e) {
-    /* 某些容器不允许枚举 */
-  }
+  var info = (api && api.getSystemInfoSync && api.getSystemInfoSync()) || {}
 
   return {
     global: host ? host.name : '(none)',
     sdkVersion: info.SDKVersion || '',
     platform: info.platform || '',
-    system: info.system || '',
     connectSocket: has(api, 'connectSocket'),
     // 旧式全局回调路径：connectSocket 只负责发起，消息走 onSocketMessage 等全局回调
     legacySocket:
@@ -78,16 +63,13 @@ function collect() {
     request: has(api, 'request'),
     storage: has(api, 'getStorageSync') && has(api, 'setStorageSync'),
     scanCode: has(api, 'scanCode'),
-    showToast: has(api, 'showToast'),
-    navigateTo: has(api, 'navigateTo'),
-    socketApis: socketNames,
   }
 }
 
 var cachedProbe = null
 
 /**
- * 能力清单（带缓存：探测要枚举宿主对象，没必要每次重连都做一遍）。
+ * 能力清单（带缓存：能力不会中途变，没必要每次重连都重探一遍）。
  * @param {boolean} [force] true 强制重新采集。
  */
 function probe(force) {
@@ -109,7 +91,6 @@ function summary() {
     'STORAGE=' + (p.storage ? 'yes' : 'no'),
     'SCAN=' + (p.scanCode ? 'yes' : 'no'),
   ]
-  parts.push('SOCKET_APIS=' + (p.socketApis.length ? p.socketApis.join('|') : '(none)'))
   return parts.join(' ')
 }
 
@@ -130,7 +111,6 @@ function unavailableError() {
 }
 
 module.exports = {
-  HOST_NAMES: HOST_NAMES,
   hostApi: hostApi,
   probe: probe,
   summary: summary,

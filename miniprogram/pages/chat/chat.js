@@ -29,19 +29,28 @@ var theme = require('../../core/theme.js')
  * 4. 步骤组要「封口」：一旦有正文/轮次/指令出现，就不再往这一组里塞东西
  *    （`_sealSteps`）。漏了会把新的工具调用插进上一段已经读完的过程里。
  *
- * ── 过程默认不显示（SHOW_STEPS）────────────────────────────────────
- * 手机上要看的是**结论**，不是过程。所以 `steps` 块照常在数据流里落块
- * （审批要知道主机在调什么、去重与回放都要用到），但**默认不渲染**，
- * 顶栏用一行「思考中…」表达"它还在动"。
+ * ── 过程显示，思考中不占顶栏（SHOW_STEPS）──────────────────────────
+ * 过程块（steps）默认**渲染**：一轮里「想 → 调工具 → 再想」聚成一条，
+ * 收起时是一行「已完成 3 个步骤」，展开看细节（限高窗口，见 .steps-scroll）。
+ * 长会话里不想看过程时，顶栏那个「收起过程」一键全折叠。
+ *
+ * 组内两类东西的可点性**不同**：工具条目可点开看参数与结果（那是内容，
+ * 想不想看由用户定）；思考行只显示阶段与耗时，**没有展开**——思维链正文按
+ * host-plugin-runtime.md 的 M28 红线不得跨 E2E 边界，宿主侧就已经丢掉了，
+ * 展开只能展开出一行"没有内容"，那是界面在骗人。
+ *
+ * 「还在动」不再单独占一行：输入区上方那条「思考中…」已删。现在由两处承担 ——
+ * 最新那条步骤组的实时标签（组在跑就显示"思考中"），与顶栏的中断按钮。
+ * 两者都在"用户正在看的地方"，不需要额外一条浮层。
  *
  * 为什么不把落块逻辑删掉：那些块是**唯一**的真相来源。删了之后
  * ① 工具参数/结果帧无处落（`_replaceTool` 按 callId 找不到就退化成新开一组），
  * ② 历史回放里每一步的 id 对不上，正文会插到错误位置。
  * 也就是说"不显示"是渲染层的决定，"记不记"是数据层的决定，两件事要分开。
  *
- * 要临时看过程：把 SHOW_STEPS 改成 true，wxml 与顶栏按钮会一起回来。
+ * 要临时藏过程：把 SHOW_STEPS 改成 false，落块逻辑一行不用动。
  */
-var SHOW_STEPS = false
+var SHOW_STEPS = true
 var MAX_BLOCKS = 400
 var MAX_TEXT_PER_BLOCK = 20000
 var DELTA_FLUSH_MS = 100
@@ -141,10 +150,23 @@ Page({
     toView: 'anchor-a',
     /** 是否已贴底。false 时浮出「回到最新」 */
     atBottom: true,
-    /** 顶栏：连接态 + 步骤组数量（决定「展开过程」要不要出现） */
+    /** 顶栏：连接状态。模型（`modelName`）跟在它后面同一行，运行态由步骤组的实时标签说 */
     barText: '',
     barTheme: 'default',
     foldable: 0,
+    /**
+     * 当前模型（`ev.model` 的原始字段）。**只读，不假装能切。**
+     *
+     * 这一代主机内核的 `agentDefaultModel` 上只有 `currentSelection`
+     *（取证：status.json 的 `modelFace = no-list+no-set via=currentSelection`），
+     * 既列不出候选也写不进去。所以这里**不存** `canSwitch` / `options`：
+     * 它们对应的下拉与面板已经删掉，留着两个没人读的字段，
+     * 下一个人会以为"只是还没接上"。
+     *
+     * `modelName` 是给界面看的截断结果，**截断在这一层做完**：wxml 里没有
+     * 「超长就省略」的表达力，交给它自己判断就会出现「有的截断有的不截」。
+     */
+    modelName: '',
     /** 全局「展开过程」：之后新开的步骤组会继承这个状态 */
     expanded: false,
     /**
@@ -216,6 +238,7 @@ Page({
     }
     this._flushDelta()
     this._stopThinkTick()
+    this._stopPermTick()
     if (this._off) {
       this._off()
       this._off = null
@@ -224,6 +247,7 @@ Page({
 
   onUnload: function () {
     this._stopThinkTick()
+    this._stopPermTick()
     if (this._off) {
       this._off()
       this._off = null
@@ -323,6 +347,13 @@ Page({
     }
     if (evt.kind !== 'payload') return
     var p = evt.payload
+
+    // 模型是**全局**的，必须在下面那句会话过滤**之前**判。
+    // 协议上 `ev.model` 不带 sessionId，所以那句现在对它不成立；但一旦有人
+    // 为了排障给它补上 sessionId（或者帧里混进了别的字段），模型名就会静默
+    // 变成空白 —— 而"模型名空白"看着像主机没给模型，排查方向会被带偏。
+    if (p.t === 'ev.model') return this._onModel(p)
+
     if (p.sessionId && p.sessionId !== this.data.sessionId) return // 不是本会话
 
     // 会话列表是"这条会话此刻在不在跑"的权威来源。这一页原来完全没看它，
@@ -355,16 +386,25 @@ Page({
     }
   },
 
+  /**
+   * 顶栏。它只由 `client.status` 决定 —— 运行态**不在这里说**：
+   * 「思考中…」由最新那条步骤组的实时标签承担（组在跑它就显示"思考中"），
+   * 那一块就在用户正在看的最新内容里，不需要再浮一条。
+   *
+   * 模型（`modelName`）也不在这里算：它是 `ev.model` 帧带来的，与连接状态无关，
+   * 混进这个函数会让"状态变了要重算顶栏"与"收到模型帧要更新"两件事互相覆盖。
+   */
   _renderBar: function () {
     var c = this.client
+    var online = typeof c.status === 'string' && c.status === 'online'
     var text
-    // 运行中说「思考中…」而不是「主机运行中」：过程块默认不显示，
-    // 这一行是用户唯一能看见的"它还在动"的信号 —— 说「运行中」像是
-    // 有什么可看的东西其实没有，说「思考中」才是实情。
-    if (this.data.running) text = '思考中…'
-    else if (typeof c.status === 'string' && c.status !== 'online') text = c.statusText || '未连接'
-    else text = '空闲'
-    this.setData({ barText: text, barTheme: this.data.running ? 'primary' : connTheme(c.status) })
+    if (online) text = '已连接'
+    else if (typeof c.status === 'string' && c.status !== 'idle') text = c.statusText || '未连接'
+    else text = '未连接'
+    this.setData({
+      barText: text,
+      barTheme: connTheme(c.status),
+    })
   },
 
   // ── 历史：打开会话时把主机上已有的内容读进来 ───────────────────────
@@ -641,8 +681,7 @@ Page({
       if (b.kind !== 'user' || b.confirmed) continue
       if (String(b.text || '').trim() !== want) break // 最近的一条对不上，那就是另一条消息
       var next = blocks.slice()
-      var copy = {}
-      for (var k in b) if (Object.prototype.hasOwnProperty.call(b, k)) copy[k] = b[k]
+      var copy = copyBlock(b)
       copy.confirmed = true
       next[i] = copy
       this._commit(next)
@@ -696,7 +735,35 @@ Page({
     return next
   },
 
+  // ── 模型 ─────────────────────────────────────────────────────────
+  /**
+   * 当前模型。**只展示，不假装能切**。
+   *
+   * 这一代主机内核的 `agentDefaultModel` 上只有 `currentSelection`
+   * （取证：status.json 的 `modelFace = no-list+no-set via=currentSelection`），
+   * 既列不出候选也写不进去。原来的下拉与候选面板已经删掉：留着"点了会弹
+   * 一个空列表"的入口，比没有这个入口更像坏了。
+   *
+   * 协议字段先立着（`ev.model` 仍带 `options` 与 `canSwitch`），等内核补上写
+   * 能力再加回交互，那时协议要同步加一条 `cmd.set_model`。
+   */
+  _onModel: function (p) {
+    var name = String(p.model || '')
+    this.setData({
+      // 超长截断在这一层做完：wxml 没有"省略"的表达力，交给它判断会出现不一致。
+      modelName: name.length > 22 ? name.slice(0, 21) + '…' : name,
+    })
+  },
+
   // ── 审批 / 提问 ───────────────────────────────────────────────────
+  /**
+   * 一次审批请求。
+   *
+   * `deadlineAt` 用**主机给的绝对时刻减去本机时钟**，然后每tick 重算剩余秒数。
+   * 为什么不在收到时就减一次算好：那样经过的秒数不会自己走，180 秒的卡会在
+   * 用户眼皮底下一直是"还有 180 秒"，直到主机那边静默拒绝——而用户完全不知道
+   * 自己刚才点的那个按钮已经失效了。
+   */
   _onPermission: function (p) {
     this.setData({
       pendingPermission: {
@@ -711,11 +778,52 @@ Page({
                 { id: 'approve', label: '允许' },
                 { id: 'reject', label: '拒绝' },
               ],
+        deadlineAt: p.expiresAt ? Date.parse(p.expiresAt) : 0,
+        remainSec: 0,
       },
       running: false,
     })
     this._renderBar()
     if (wx.vibrateLong) wx.vibrateLong()
+    this._startPermTick()
+  },
+
+  /** 审批卡的本地倒数。宿主超时会自动拒绝，所以这里只负责"让人看见时间在走"。 */
+  _startPermTick: function () {
+    this._stopPermTick()
+    var self = this
+    var tick = function () {
+      var perm = self.data.pendingPermission
+      if (!perm || !perm.deadlineAt) {
+        self._stopPermTick()
+        return
+      }
+      var remain = Math.max(0, Math.round((perm.deadlineAt - Date.now()) / 1000))
+      // 只在**跨过整数秒**时 setData：一秒一次是对的，每帧一次会让整页重渲。
+      if (remain === perm.remainSec) {
+        // 数字没变不代表没事干：到期后要停表，否则它会永远每秒醒一次。
+        if (remain <= 0) self._stopPermTick()
+        return
+      }
+      self.setData({ 'pendingPermission.remainSec': remain })
+      if (remain <= 0) {
+        self._stopPermTick()
+        // 不清空卡片：主机那边还在等一个决定，本地先到期只说明"来不及了"，
+        // 直接把卡撤掉会让人以为请求根本不存在。
+        return
+      }
+      self._permTimer = setTimeout(tick, 1000)
+    }
+    // **先立刻算一次**再排下一秒：否则卡片要挂整整一秒才显示数字，
+    // 而那正是用户盯着"允许/拒绝"看的时候。
+    tick()
+  },
+
+  _stopPermTick: function () {
+    if (this._permTimer) {
+      clearTimeout(this._permTimer)
+      this._permTimer = null
+    }
   },
 
   _onQuestion: function (p) {
@@ -742,6 +850,9 @@ Page({
     var running = p.state === 'running'
     var blocks = this.data.blocks
     if (!running) blocks = this._closeThink(blocks)
+    // 这条帧是"挂着的审批/提问已经作废"的唯一信号（只有 running/idle 会发），
+    // 所以收起卡片的同时必须停掉那个还在走的表，否则它会一直 setData 到天荒地老。
+    if (this.data.pendingPermission || this.data.pendingQuestion) this._stopPermTick()
     this.setData({ running: running, pendingPermission: null, pendingQuestion: null })
     if (running) {
       this._startThinkTick()
@@ -1021,6 +1132,7 @@ Page({
     var decision = e.currentTarget.dataset.decision
     var perm = this.data.pendingPermission
     if (!perm) return
+    this._stopPermTick()
     this.setData({ pendingPermission: null, running: decision !== 'reject' })
     this._renderBar()
     this.client.resolvePermission(this.data.sessionId, perm.requestId, decision)

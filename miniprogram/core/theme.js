@@ -128,10 +128,6 @@ function toggle(page) {
 }
 
 module.exports = {
-  LIGHT: LIGHT,
-  DARK: DARK,
-  DARK_CLASS: DARK_CLASS,
-  themeName: themeName,
   current: current,
   applyTo: applyTo,
   toggle: toggle,
