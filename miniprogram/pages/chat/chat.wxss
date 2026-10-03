@@ -476,6 +476,49 @@
   white-space: pre-wrap;
 }
 
+/* ── Markdown 渲染层（2026-10-04）────────────────────────────────────
+ *
+ * **这里的样式是"锦上添花"，不是"生效的前提"。**
+ * 所有颜色/字号都由 core/markdown.js 在渲染时算成 inline style 写进 nodes
+ * （`rich-text` 对外部 class 的支持不可靠，而 CSS 自定义属性在里面继承又不稳 ——
+ * 本项目真机踩过"深色下字全黑"）。所以这里只负责三件 wxss 能做的事：
+ *
+ *   ① 布局类的（表格横滚容器、body 的收缩）
+ *   ② 给 `.reply` 的继承兜底（下面那条 `white-space: normal` 是必须的）
+ *   ③ 主题无关的兜底（比如 rich-text 在某些基础库上不认 pre/code 的默认样式）
+ *
+ * ⚠️ ② 为什么必须写：`.reply` 上有 `white-space: pre-wrap`（正文按原样换行是
+ * Markdown 关闭时的行为）。这个值会**继承进 rich-text**，于是 markdown 里
+ * 每个换行都变成真换行、段间距被空白符放大成两倍。`.md-body` 必须把它盖掉。
+ */
+.md-body {
+  display: block;
+  /* 盖掉 .reply 的 pre-wrap —— 排版由 markdown 自己的 margin 管 */
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.65;
+}
+
+/* 表格横向滚动容器。
+ *
+ * 为什么必须有外层容器：`rich-text` **内部不能滚动**，列数一多表格就把布局撑破
+ * （这一页的 .reply 是 `width:100%`，撑破就是横向溢出、整页被拖动）。
+ * `scroll-x` 需要一个**有固定宽度**的父容器才能生效，所以给它 width:100%、
+ * 让里面的表格按列数定宽（core/markdown.js 的 COL_W）。
+ *
+ * 高度不用写死：table 的行数不定，写死会在多行表上截断、或者一行表留一大片空白。
+ */
+.md-table-scroll {
+  display: block;
+  width: 100%;
+  margin: 12rpx 0;
+  /* 底色与卡片有一档差别，让"这块能横滑"看得出来 —— 不然用户只会以为表格缺列 */
+  background: var(--td-bg-color-container);
+  border-radius: 8rpx;
+  /* 横向滚动条的占位高度（iOS 会画在内容下方）。留 0 是因为真机上它压住末行内容。 */
+  scrollbar-width: none;
+}
+
 /* 光标：还在写的时候让人知道没结束 */
 .caret {
   display: inline-block;
