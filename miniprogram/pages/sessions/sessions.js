@@ -168,6 +168,23 @@ Page({
         if (this.data.busy && wx.vibrateShort) wx.vibrateShort({ type: 'light' })
         this.setData({ paired: true, busy: false, manualOpen: false })
         this.refresh()
+      } else if (evt.status === 'needs-pair') {
+        // 配对在服务端已经失效（主机重启过 / 会话被回收）—— 客户端丢了自己的 pairing，
+        // 但页面若还留着 `paired: true`，用户看到的就是一张**永远空着、且「＋新建会话」
+        // 点了只会超时的列表**，没有任何地方能重新扫码。这一支就是把界面带回扫码页。
+        //
+        // 为什么以前没暴露：那时恢复路径在验证之前就宣布了 online（见 client.js
+        // _onHelloOk 的注释），于是这个 needs-pair 几乎永远到不了。
+        this.setData({
+          paired: false,
+          busy: false,
+          creating: false,
+          sessions: [],
+          hiddenArchived: 0,
+          hiddenText: '',
+          manualOpen: true,
+        })
+        wx.showToast({ title: String(evt.text || '会话已失效，请重新扫码配对').slice(0, 40), icon: 'none' })
       }
     } else if (evt.kind === 'error') {
       // 配对失败要回到可重试的状态，否则「正在配对…」会一直停在那儿

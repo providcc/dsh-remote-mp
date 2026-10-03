@@ -35,6 +35,15 @@ view, scroll-view, input, textarea, button {
      min-height 而不是 height：内容不足一屏时底色也要到底。 */
   min-height: 100%;
   background: var(--td-bg-color-page);
+  /* 正文色也必须在这里声明一次，**不能只靠继承 page 的 color**。
+     为什么：CSS 自定义属性是"在声明它的元素上解析"——`page` 元素自己身上没有
+     .theme-dark（那个 class 挂在本节点上），所以 `page { color: var(--td-text-color-primary) }`
+     里的 var() 解析到的是**浅色表**的 #1f2329（近黑），算出的 color 作为**计算值**
+     继承给所有后代。后代虽然重定义了 --td-text-color-primary，但 color 是继承来的
+     计算值，不会因为变量变了而重算 —— 结果深色下凡是没显式写 color 的文字
+     （主机名、会话标题、区块标题…）全是近黑字压在深底上，真机上"字全黑了"。
+     在挂了 .theme-dark 的节点上重新声明一次，var() 才会在深色表的上下文里解析。 */
+  color: var(--td-text-color-primary);
 }
 
 /* ── 卡片：三页共用的基础容器 ─────────────────────────────────────────

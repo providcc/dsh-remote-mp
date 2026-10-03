@@ -19,6 +19,10 @@
   display: flex;
   flex-direction: column;
   background: var(--td-bg-color-page);
+  /* 与 app.wxss 的 .page-pad 同理：正文色必须在本节点重新声明一次。
+     只继承 `page` 的 color 拿到的是浅色表算出的近黑色（page 自己没有 .theme-dark），
+     深色下没显式写 color 的文字就会变成深底上的黑字。 */
+  color: var(--td-text-color-primary);
 }
 
 /* ── 顶栏：运行控制条 ─────────────────────────────────────────────── */

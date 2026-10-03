@@ -588,6 +588,17 @@ Page({
   _applyText: function (blocks, index, messageId, text, done) {
     var idx = index[messageId]
     if (idx === undefined || idx >= blocks.length || blocks[idx].kind !== 'text') {
+      // **空正文不建块。**
+      //
+      // 宿主里绝大多数 `assistant/message` 带的是 `reasoning` + `tool-call`（正文是空的），
+      // 按 M28 只有 `type==='text'` 的分片出站，于是每一条都会变成一帧
+      // `delta:'' + done:true`。第一版照样给它建了一个空text 块，
+      // 界面上就是**一排只有 padding 的空白窄条**（真机截图：回复正文下面三个空壳），
+      // 而这一页的主题是"看结论"，凭空三行空白比没有更糟。
+      //
+      // 为什么丢掉这一帧是安全的：那帧唯一的作用是"让手机停止转圈"，
+      // 而**没有块就没有转圈**。真正带字的帧随后按messageId 建块，不受影响。
+      if (!text) return blocks
       var appended = this._append(blocks, {
         key: 'm' + this._counter++,
         kind: 'text',

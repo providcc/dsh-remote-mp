@@ -286,8 +286,18 @@ class DrcClient {
       this._setStatus('pairing', '正在配对…')
       this.sendControl({ t: 'pair-begin-client', pairingToken: this._pendingToken })
     } else if (this.isPaired()) {
-      // 恢复尝试 —— 会话可能服务端已经没了
-      this._setStatus('online', '已连接，正在同步会话列表')
+      // 恢复尝试 —— **会话可能服务端已经没了**（主机重启 / 会话被回收）。
+      //
+      // 刻意**不**在这里宣布 online：`isPaired()` 只说明本机存着 PSK 与 convId，
+      // 而中继侧那条会话早就不存在了。原来的写法先摆出「已连接，正在同步会话列表」，
+      // 于是 list_sessions 被中继回 `unknown_session` 之前，界面一直显示"在线"、
+      // 「＋新建会话」也可点 —— 用户点下去只会等到 12 秒超时，然后什么也没发生。
+      // 真机上这正是"新建会话用不了"的全部现象：会话已死，界面说它活着。
+      //
+      // 所以恢复期间用一个**独立的** connecting 态：它和"首次连接中"视觉上一样，
+      // 但页面能靠它把主动作置灰（见 sessions.wxml 的 section-action.off）。
+      // 中继回 unknown_session 时下面那一步会把它转成 needs-pair，用户重新扫码即可。
+      this._setStatus('connecting', '正在恢复与主机的连接…')
       this.sendCmd({ t: 'cmd.list_sessions', cmdId: this.newCmdId() })
     } else {
       this._setStatus('needs-pair', '请输入主机上的 6 位配对码')
@@ -353,11 +363,11 @@ class DrcClient {
     // 每个页面都要的簿记放在这里，页面保持「哑」
     if (payload.t === 'ev.session_changed') {
       this.sessions = payload.sessions || []
-      // 列表到了，上面那句就该退休。原来它一直挂着不动 —— DESIGN-REVIEW.md
-      // 早就点过名（「永远停在『已连接，正在恢复会话』，这就是静默坏掉」）。
-      // 何况协议里根本没有取历史的帧，写"恢复会话"会让人以为历史会回来，
-      // 然后点进会话看到空白，只能判断成"坏了"。
-      if (this.statusText === '已连接，正在同步会话列表') {
+      // **主机真的回了一句** —— 这是"会话确实活着"的第一个硬证据，
+      // 所以 online 只在这里宣布（恢复路径见 _onHelloOk 的注释）。
+      // 判据用 status 而不是 statusText：文案会改，状态不会，
+      // 而且 connecting 同时覆盖"首次连接"与"恢复中"两种情形 —— 两者都还没被主机确认过。
+      if (this.status === 'connecting') {
         this._setStatus('online', '已连接到主机')
       }
     } else if (payload.t === 'ev.keep_awake_state') {
@@ -455,6 +465,23 @@ class DrcClient {
    */
   newSession() {
     var self = this
+    // `isPaired()` 只说明本机存着 PSK 与 convId。**主机侧那条会话可能早没了**
+    // （主机重启 / 会话被回收），而这时 sendCmd 照样"发得出去"——中继只是回一个
+    // `unknown_session`，命令本身永远不会有 `ev.result`。
+    // 于是调用方只能等满 COMMAND_TIMEOUT_MS 才知道失败了：真机上表现就是
+    // 「点了新建会话，界面毫无反应，12 秒后才弹一句主机没有回应」。
+    //
+    // 所以未确认过的连接一律**就地拒绝并说清原因**。判据用 status === 'online'：
+    // 它只在收到主机第一句 `ev.session_changed` 之后才成立（见 _onEncrypted）。
+    if (this.status !== 'online') {
+      return Promise.resolve({
+        ok: false,
+        message:
+          this.status === 'connecting'
+            ? '还没连上主机，正在恢复连接，请稍后重试'
+            : '还没有连上主机，请先完成配对',
+      })
+    }
     if (!this.isPaired() || !this.sock) {
       return Promise.resolve({ ok: false, message: '还没有连上主机' })
     }
