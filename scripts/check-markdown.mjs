@@ -67,7 +67,9 @@ test('产出的标签全在 rich-text 白名单内（越界标签会被小程序
   const bad = tags.filter((t) => !md.ALLOWED[t])
   assert.deepEqual(bad, [], `越界标签：${[...new Set(bad)].join(', ')}`)
   // 反过来钉住"覆盖要全"：上面那份样例用到的标签一个都不能少
-  for (const need of ['h1', 'h6', 'p', 'strong', 'em', 'del', 'code', 'pre', 'a', 'ul', 'ol', 'li', 'blockquote', 'table', 'tr', 'th', 'td', 'hr', 'img']) {
+  for (const need of ['h1', 'h6', 'p', 'strong', 'em', 'del', 'code', 'pre', 'a', 'span', 'blockquote', 'table', 'tr', 'th', 'td', 'hr', 'img']) {
+  // 列表不再落成 ul/li：真机上 ul/li 在 rich-text 里布局坍缩（markdown.js 的
+  // listNode 注释有取证），列表现在是带 marker span 的 p，由下面几条判据钉住。
     assert.ok(tags.includes(need), `样例里的 ${need} 没渲染出来（实际：${[...new Set(tags)].join(', ')}）`)
   }
 })
@@ -137,8 +139,10 @@ test('链接保留 href 与可读样式（不假装能点：rich-text 里 a 点�
 
 test('列表项的 marker 单独成节点，不混进正文文字里', () => {
   // 反证：把 marker 的 span 去掉、直接把 '• ' 拼进文本 → 这条红。
-  const li = find(md.render('- 甲\n- 乙\n', false), (n) => n.name === 'li')
-  assert.ok(li, '没有 li')
+  // 列表项现在落成 p（ul/li 布局坍缩，见 markdown.js listNode 注释）：
+  // 认取方式是——第一个子节点是 marker span 的那个 p。
+  const li = find(md.render('- 甲\n- 乙\n', false), (n) => n.name === 'p' && n.children[0] && n.children[0].name === 'span')
+  assert.ok(li, '没有列表项（marker span 开头的 p）')
   const marker = li.children[0]
   assert.equal(marker.name, 'span', 'marker 必须是独立节点（第一条子节点）')
   assert.match(textOf(marker), /•/, `marker 文本不对：${JSON.stringify(textOf(marker))}`)
@@ -155,18 +159,17 @@ test('列表项的 marker 单独成节点，不混进正文文字里', () => {
 })
 
 test('有序列表 marker 是数字，且按 start 递增', () => {
-  const li = find(md.render('3. 甲\n4. 乙\n', false), (n) => n.name === 'li')
+  const li = find(md.render('3. 甲\n4. 乙\n', false), (n) => n.name === 'p' && n.children[0] && n.children[0].name === 'span')
   assert.equal(textOf(li.children[0]), '3.', `有序列表 marker 应从 start 开始，实际 ${textOf(li.children[0])}`)
 })
 
 test('嵌套列表用 padding 缩进而不是 margin（margin 在 rich-text 里会塌陷）', () => {
-  const ul = find(md.render('- 甲\n  - 乙\n', false), (n) => n.name === 'ul')
-  assert.match(styleOf(ul), /padding-left:/, '列表缩进必须用 padding —— margin 会塌陷，层级感就没了')
-  // ⚠️ `find` 收**数组**（第一版传了单个节点，报 "is not iterable"）。
-  // 嵌套那个 ul 在外层 ul 的 children 里，要从 children 找起。
-  const nested = find(ul.children || [], (n) => n.name === 'ul')
-  assert.ok(nested, '嵌套列表没解析出来')
-  assert.match(styleOf(nested), /padding-left:/)
+  // 摊平之后嵌套项是**同数组的下一条 p**（不再是 children 里的 ul）：
+  // 层级靠 padding 逐层加深体现，28rpx → 56rpx。
+  const items = md.render('- 甲\n  - 乙\n', false).filter((n) => n.name === 'p' && /padding-left:/.test(styleOf(n)))
+  assert.ok(items.length >= 2, '嵌套列表没解析出来（摊平后应至少有两条）')
+  assert.match(styleOf(items[0]), /padding-left:28rpx/, '列表缩进必须用 padding —— margin 会塌陷，层级感就没了')
+  assert.match(styleOf(items[1]), /padding-left:56rpx/, '嵌套项要缩得更深：28 → 56rpx')
 })
 
 test('任务列表 marker 是 ✓/☐ 而不是 •', () => {

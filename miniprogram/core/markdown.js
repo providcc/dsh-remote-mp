@@ -231,6 +231,16 @@ function blockNodes(tokens, c) {
         )
         break
       }
+      case 'text':
+        // 列表项/引用里的裸文本段：它带的是**行内** tokens。旧代码让它落进
+        // default 分支递归，于是每个行内 token（文本/加粗/行内码）都各自变成
+        // 一个 p —— rich-text 里 p 嵌 p 会按 shrink-to-fit 布局，真机上整列
+        // bullet 每行只排五六个字（2026-10-04 截图，见 mp-shots chat-md-width）。
+        // 正确形状：一个 p 包着行内节点；listNode 再把 marker 与它们拼成一条。
+        out.push(
+          el('p', 'font-size:29rpx;line-height:1.65;margin:0 0 12rpx;color:' + c.text + ';', t.tokens ? inlineNodes(t.tokens, c) : [textNode(t.text || '')])
+        )
+        break
       case 'paragraph':
         // 段落间距靠 `margin` 而不是空 `space` 节点：`rich-text` 里多个
         // 相邻 margin 会**塌陷**（拿到最大值），所以只留底部 margin，
@@ -280,7 +290,7 @@ function blockNodes(tokens, c) {
         break
       }
       case 'list':
-        out.push(listNode(t, c))
+        out.push.apply(out, listNode(t, c))
         break
       case 'table':
         out.push(tableNode(t, c))
@@ -302,31 +312,49 @@ function blockNodes(tokens, c) {
   return out
 }
 
-function listNode(t, c) {
+/**
+ * 为什么每个条目是一个 p 而不是 ul/li：真机截图（2026-10-04）里 ul/li 在
+ * rich-text 中布局坍缩成 shrink-to-fit，一整列 bullet 每行只排五六个字；
+ * 同一屏里 p 段落是满宽的，差别只在标签。缩进用 padding-left（rich-text
+ * 内部 margin 会塌陷）。返回值因此是**一个数组**，调用方 apply 展开。
+ */
+function listNode(t, c, depth) {
+  depth = depth || 0
   var ordered = !!t.ordered
-  var tag = ordered ? 'ol' : 'ul'
-  var items = []
+  var pad = 28 + depth * 28
+  var out = []
   for (var i = 0; i < (t.items || []).length; i++) {
     var it = t.items[i]
     // 任务列表：`- [x] foo` → marker 换成 ✓/☐，其余按普通列表处理
     var marker = ordered ? String((t.start || 1) + i) + '.' : '•'
     if (it.task) marker = it.checked ? '✓' : '☐'
 
-    var body = blockNodes(it.tokens, c)
-    // 列表项内部的段落已经有 margin，去掉首段的上边距（本身为0）与末段的
-    // 下边距（否则每个条目下面多一截空白，列表显得松散）。
+    // 条目自身的行内内容与嵌套结构**分开处理**：行内摊进这一条 p；
+    // 嵌套列表递归成**扁平**的后续几条（缩进逐层加深）；其它块级内容
+    // （代码块等）跟在这一条后面。
+    //
+    // 为什么必须摊平而不能嵌套：rich-text 里 p 嵌 p 会按 shrink-to-fit 布局，
+    // 真机上整列 bullet 每行只排五六个字（2026-10-04 截图，mp-shots 的
+    // chat-md-width）。摊平之后每个条目都是顶层 p —— 满宽。
     var kids = [el('span', 'color:' + c.muted + ';margin-right:8rpx;', [textNode(marker)])]
-    if (body.length === 1 && body[0].name === 'p') {
-      var p = body[0]
-      kids = kids.concat(p.children)
-    } else {
-      kids = kids.concat(body)
+    var trailing = []
+    var toks = it.tokens || []
+    for (var k = 0; k < toks.length; k++) {
+      var tk = toks[k]
+      if (tk.type === 'space') continue
+      if (tk.type === 'text') {
+        kids = kids.concat(tk.tokens ? inlineNodes(tk.tokens, c) : [textNode(tk.text || '')])
+      } else if (tk.type === 'list') {
+        trailing = trailing.concat(listNode(tk, c, depth + 1))
+      } else {
+        trailing = trailing.concat(blockNodes([tk], c))
+      }
     }
-    items.push(el('li', 'display:block;margin:4rpx 0;', kids))
+    // 缩进用 padding-left（margin 在 rich-text 内部会塌陷），逐层 +28rpx。
+    out.push(el('p', 'margin:4rpx 0;padding-left:' + pad + 'rpx;color:' + c.text + ';', kids))
+    out = out.concat(trailing)
   }
-  // 缩进靠 padding（不用 margin）：`rich-text` 内部的 margin 会塌陷，
-  // 嵌套层级越多塌陷越明显，padding 是累加的、层级感才对。
-  return el(tag, 'display:block;margin:8rpx 0;padding-left:28rpx;color:' + c.text + ';', items)
+  return out
 }
 
 /**
@@ -357,25 +385,25 @@ function tableNode(t, c) {
   for (var i = 0; i < (t.header || []).length; i++) {
     headCells.push(cellNode(t.header[i], c, 'th', true, colPct))
   }
-  rows.push(el('tr', 'display:block;', headCells))
+  rows.push(el('tr', '', headCells))
   for (var r = 0; r < (t.rows || []).length; r++) {
     var row = t.rows[r]
     var tds = []
     for (var k = 0; k < row.length; k++) tds.push(cellNode(row[k], c, 'td', false, colPct))
-    rows.push(el('tr', 'display:block;', tds))
+    rows.push(el('tr', '', tds))
   }
   return el(
     'table',
-    'display:block;width:100%;' +
+    'display:block;width:100%;table-layout:fixed;' +
       'border-collapse:collapse;font-size:25rpx;',
-    [el('thead', 'display:block;', [rows[0]]), el('tbody', 'display:block;', rows.slice(1))]
+    [el('thead', '', [rows[0]]), el('tbody', '', rows.slice(1))]
   )
 }
 
 function cellNode(cell, c, tag, isHead, colPct) {
   var pad = '12rpx 16rpx;border-right:2rpx solid ' + c.rule + ';border-bottom:2rpx solid ' + c.rule + ';'
   var style =
-    'display:block;width:' + colPct + ';min-width:120rpx;box-sizing:border-box;' +
+    'width:' + colPct + ';min-width:120rpx;box-sizing:border-box;' +
     'padding:12rpx 16rpx;' + pad +
     'word-break:break-all;white-space:normal;vertical-align:top;' +
     'color:' + c.text + ';'
