@@ -6,6 +6,51 @@ var env = require('../../core/env.js')
 var theme = require('../../core/theme.js')
 
 /**
+ * 工作区别名：目录的最后一段（`/Users/linbin/dsh-remote-control` → `dsh-remote-control`）。
+ *
+ * 为什么要有它：会话按工作区排序之后，“属于哪间屋子”是**分组依据**，
+ * 而完整路径太长、一行放不下还容易把标题挤掉。chip 里放短名，
+ * 完整路径弱化在第二行当补充（2026-10-04 用户要的"工作区 tag + 目录弱化"）。
+ * 空目录返回 ''——调用方据此不渲染这个 chip（会话没挂目录时第二行退化成 id）。
+ */
+function workspaceTagOf(path) {
+  var raw = String(path || '').replace(/\/+$/, '')
+  if (!raw) return ''
+  var parts = raw.split('/')
+  var last = ''
+  for (var i = 0; i < parts.length; i++) {
+    if (parts[i]) last = parts[i]
+  }
+  return last.slice(0, 24)
+}
+
+/**
+ * 会话排序（2026-10-04 用户拍板的四级）：**工作区 → 状态（运行中在前）→
+ * 最后消息时间（新的在前）→ 名称**。
+ *
+ * 工作区打头是因为人在用的时候心里想的是"那个项目的会话"，
+ * 先按状态排会把同一个项目的会话打散到屏幕两端；空目录排最后——
+ * 没挂目录的会话自成一组，不该抢在正经分组前面。
+ * 四级缺一个都还能撞：两个项目同名会话在同一秒更新，就按名字定序，
+ * 免得每次刷新列表都在跳。
+ */
+function sessionRank(a, b) {
+  var aw = a.workspace || ''
+  var bw = b.workspace || ''
+  if (aw !== bw) {
+    if (!aw) return 1
+    if (!bw) return -1
+    var byWs = aw.localeCompare(bw)
+    if (byWs !== 0) return byWs
+  }
+  if (a.running !== b.running) return a.running ? -1 : 1
+  var at = a.sortAt || 0
+  var bt = b.sortAt || 0
+  if (at !== bt) return bt - at
+  return (a.title || '').localeCompare(b.title || '')
+}
+
+/**
  * 会话徽标：状态不可混淆，尤其是「已归档」——
  * 主机会拒绝归档会话的每一步，必须一眼可辨（旧版漏了这个）。
  */
@@ -227,7 +272,7 @@ Page({
    * 但也不能悄无声息地消失 —— 底部留一句「已隐藏 N 个」，否则用户会以为会话丢了。
    */
   _renderSessions: function (list) {
-    var items = []
+    var rows = []
     var hidden = 0
     var all = list || []
     for (var i = 0; i < all.length; i++) {
@@ -237,14 +282,31 @@ Page({
         continue
       }
       var b = badgeFor(s.state, s.running)
-      items.push({
+      rows.push({
         id: s.id,
         title: s.title || s.id,
         workspace: s.workspace || '',
         badgeText: b.text,
         badgeTheme: b.theme,
         running: b.theme === 'primary',
+        // sortAt 只参与排序，不进 setData（渲染层用不到，别让它两处口径）
+        sortAt: new Date(s.updatedAt).getTime() || 0,
         updatedAt: formatTime(s.updatedAt),
+      })
+    }
+    rows.sort(sessionRank)
+    var items = []
+    for (var j = 0; j < rows.length; j++) {
+      var r = rows[j]
+      items.push({
+        id: r.id,
+        title: r.title,
+        workspace: r.workspace,
+        workspaceTag: workspaceTagOf(r.workspace),
+        badgeText: r.badgeText,
+        badgeTheme: r.badgeTheme,
+        running: r.running,
+        updatedAt: r.updatedAt,
       })
     }
     this.setData({

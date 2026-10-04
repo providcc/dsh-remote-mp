@@ -155,7 +155,14 @@
           <view class="sess-bar {{item.badgeTheme}}"></view>
 
           <view class="sess-main">
-            <view class="sess-title ellipsis">{{item.title}}</view>
+            <!-- 工作区 tag 与标题同一行："属于哪间屋子"现在是一级信息
+                 （列表按工作区排序，见 sessions.js 的 sessionRank）。
+                 标题过长时 chip 不动、标题先省略。 -->
+            <view class="sess-title-row">
+              <view class="sess-title ellipsis">{{item.title}}</view>
+              <view wx:if="{{item.workspaceTag}}" class="sess-tag">{{item.workspaceTag}}</view>
+            </view>
+            <!-- 完整目录弱化在下面：tag 给短名，这里只是补充 -->
             <view class="sess-sub ellipsis">{{item.workspace || item.id}}</view>
           </view>
 
