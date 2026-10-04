@@ -184,6 +184,19 @@ Page({
     queue: [],
     /** 队列默认展开； collapsing 之后只留一行汇总（长队列不许把消息区顶掉）。 */
     queueOpen: true,
+    /**
+     * 待办清单（内核 `todo/write` → `ev.todo`，全量快照）。
+     * 一项：`{content, status: 'pending' | 'in_progress' | 'completed'}`。
+     * 与 queue（底部、排队中的指令）分管上下两端，互不打架。
+     */
+    todos: [],
+    /** 待办面板默认收起：只报进度，展开是临时的（点消息区就收回）。 */
+    todosOpen: false,
+    /** 收起来时那一行的三个派生值：完成数 / 有没有在跑的 / 在跑的那条正文。
+     * 与 modelName 同一纪律：截断与派生都在这一层做完，wxml 里不做运算。 */
+    todoDone: 0,
+    todoRunning: 0,
+    todoRunningText: '',
     /** 输入区上方待发送的图片附件（本地压缩后的临时文件）。 */
     attachments: [],
     /** 顶栏：连接状态。模型（`modelName`）跟在它后面同一行，运行态由步骤组的实时标签说 */
@@ -465,6 +478,7 @@ Page({
     if (p.t === 'ev.question_request') return this._onQuestion(p)
     if (p.t === 'ev.question_resolved') return this._onQuestionResolved(p)
     if (p.t === 'ev.run_state') return this._onRunState(p)
+    if (p.t === 'ev.todo') return this._onTodo(p)
     if (p.t === 'ev.result') {
       if (!p.ok && p.message) wx.showToast({ title: String(p.message).slice(0, 40), icon: 'none' })
       return
@@ -514,6 +528,53 @@ Page({
       barText: text,
       barTheme: connTheme(c.status),
     })
+  },
+
+  /**
+   * 待办清单（内核 `todo/write` → `ev.todo`）。
+   *
+   * 为什么放在这一页的顶部而不是消息流里：它是"这一轮在干什么"的索引，
+   * 和步骤组是两种粒度；混进流里会互相踩，而排队消息在底部输入区上方——
+   * 顶 / 底分开，两边都不挤（用户 2026-10-05 点的位置）。
+   * 三个展示纪律：默认收起（只报进度）、点条子展开、点消息区自动收回。
+   */
+  _onTodo: function (p) {
+    var todos = Array.isArray(p.todos) ? p.todos : []
+    // 同一帧可能到两次（重连补发），逐条比对再决定要不要 setData：
+    // 每帧都 setData 会让面板在每一条 todo 上白重排一次。
+    var same =
+      todos.length === this.data.todos.length &&
+      todos.every(
+        function (item, i) {
+          var old = this.data.todos[i]
+          return !!old && old.content === item.content && old.status === item.status
+        }.bind(this),
+      )
+    if (same) return
+    var done = 0
+    var live = ''
+    for (var i = 0; i < todos.length; i++) {
+      if (todos[i].status === 'completed') done++
+      else if (todos[i].status === 'in_progress') live = todos[i].content
+    }
+    this.setData({
+      todos: todos,
+      todoDone: done,
+      todoRunning: live ? 1 : 0,
+      todoRunningText: live ? '进行中 ' + live.slice(0, 30) : '',
+    })
+    // 空的要收回：清单被内核清空时不该留一个展开的空面板。
+    if (!todos.length) this.setData({ todosOpen: false })
+  },
+
+  onToggleTodos: function () {
+    this.setData({ todosOpen: !this.data.todosOpen })
+  },
+
+  /** 点消息区（scroll-view 的 catchtap）就收回 —— 展开态是临时的，不该常驻。 */
+  onCollapseTodos: function () {
+    if (!this.data.todosOpen) return
+    this.setData({ todosOpen: false })
   },
 
   // ── 历史：打开会话时把主机上已有的内容读进来 ───────────────────────

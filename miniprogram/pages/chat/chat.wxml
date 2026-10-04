@@ -29,6 +29,29 @@
     </view>
   </view>
 
+  <!-- 待办条（todo list）。做在**顶部**是用户定的位：它是"这一轮在干什么"的索引，
+       混进消息流会和步骤组互相踩；而排队消息在底部输入区上方，两边天然不打架。
+       默认收起只报进度（2/5），点一下展开全文，点消息区任意处自动收回 ——
+       一屏就一屏的内容，常驻展开会挤掉正在看的正文。没有待办时整块不占地方。 -->
+  <block wx:if="{{todos.length}}">
+    <view class="todo-bar" hover-class="pressed" hover-stay-time="80" bindtap="onToggleTodos">
+      <view class="todo-check {{todoDone === todos.length ? 'todo-all-done' : ''}}"></view>
+      <text class="todo-count">待办 {{todoDone}}/{{todos.length}}</text>
+      <text wx:if="{{todoRunning}}" class="todo-running">{{todoRunningText}}</text>
+      <view class="todo-gap"></view>
+      <text class="todo-toggle">{{todosOpen ? '收起' : '展开'}}</text>
+    </view>
+    <view wx:if="{{todosOpen}}" class="todo-panel">
+      <view
+        wx:for="{{todos}}"
+        wx:key="index"
+        class="todo-item {{item.status === 'completed' ? 'todo-item-done' : (item.status === 'in_progress' ? 'todo-item-live' : '')}}">
+        <view class="todo-mark {{item.status}}"></view>
+        <text class="todo-text">{{item.content}}</text>
+      </view>
+    </view>
+  </block>
+
   <scroll-view
     class="scroll"
     scroll-y
@@ -37,7 +60,8 @@
     enable-flex
     lower-threshold="40"
     bindscroll="onScroll"
-    bindscrolltolower="onScrollToLower">
+    bindscrolltolower="onScrollToLower"
+    catchtap="onCollapseTodos">
 
     <view class="pad">
       <!-- 历史头：读到了 / 在读 / 读不到，三种说法必须分开。
