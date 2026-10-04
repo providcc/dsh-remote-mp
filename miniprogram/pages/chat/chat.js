@@ -479,7 +479,14 @@ Page({
       var running = rows[i].running === true
       if (running === this.data.running) return
       this.setData({ running: running })
-      if (!running) {
+      if (running) {
+        // 从会话列表进一条**正在执行**的会话时，这条帧是此刻唯一的"它在跑"信号：
+        // `ev.run_state` 只在状态跳变时发，进入时不会补发。原来这里只翻了
+        // `data.running`（顶栏话术变了），正文里却没有"正在执行"那一组步骤，
+        // 要等下一次内核事件才补上（2026-10-05 用户实测）。所以翻牌的同时
+        // 要把实时组开出来——`_ensureThinkOpen` 自带幂等守卫，重入不会开两组。
+        this._commit(this._ensureThinkOpen(this.data.blocks))
+      } else {
         this._stopThinkTick()
         this._drainQueue()
       }
@@ -572,6 +579,12 @@ Page({
           historyLoadingMore: false,
           toView: anchor || self.data.toView,
         })
+        // 第一页落地后再补一次实时组：从列表进一条空历史的执行中会话时，
+        // `_onSessions` 那一次 ensureThinkOpen 面对的是空块流（"空流不补"），
+ // 等历史回来才该开。幂等守卫在 `_ensureThinkOpen` 里，重入不会开两组。
+        if (firstPage && self.data.running) {
+          merged = self._ensureThinkOpen(merged)
+        }
         self._commit(merged, { noScroll: !firstPage })
       })
   },
