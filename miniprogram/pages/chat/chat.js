@@ -274,6 +274,10 @@ Page({
     this._draining = false
     this._historyBusy = false
     this._historyStarted = false
+    /** 实时待办帧到过没有（实时帧优先于历史快照的判据）。 */
+    this._todoLive = false
+    /** 当前这一页历史里的最后一份待办快照（undefined = 这页没有）。 */
+    this._replayTodos = undefined
     /** 翻页游标：由主机给，原样回传。null = 已经到最早了 */
     this._historyBefore = null
   },
@@ -538,10 +542,15 @@ Page({
    * 顶 / 底分开，两边都不挤（用户 2026-10-05 点的位置）。
    * 三个展示纪律：默认收起（只报进度）、点条子展开、点消息区自动收回。
    */
-  _onTodo: function (p) {
-    var todos = Array.isArray(p.todos) ? p.todos : []
-    // 同一帧可能到两次（重连补发），逐条比对再决定要不要 setData：
-    // 每帧都 setData 会让面板在每一条 todo 上白重排一次。
+  /**
+   * 把一份清单落到顶部那颗条上（实时帧与历史回放共用同一入口）。
+   *
+   * 三条纪律：
+   * - **同一份快照不重排**：逐条比对后再 setData，每帧都 setData 会让面板白重排；
+   * - 派生值（完成数 / 在进行哪条）在这里算完，wxml 里不做运算；
+   * - 清单空了收回展开态：内核清空 todo 时不该留一个展开的空面板。
+   */
+  _setTodos: function (todos) {
     var same =
       todos.length === this.data.todos.length &&
       todos.every(
@@ -565,6 +574,15 @@ Page({
     })
     // 空的要收回：清单被内核清空时不该留一个展开的空面板。
     if (!todos.length) this.setData({ todosOpen: false })
+  },
+
+  /**
+   * 实时待办帧。`_todoLive` 一置上，历史回放就再也不许拿过期快照盖它——
+   * 实时帧后到，后到者胜（反过来：历史第一页先落地、实时帧随后到，也自然胜出）。
+   */
+  _onTodo: function (p) {
+    this._todoLive = true
+    this._setTodos(Array.isArray(p.todos) ? p.todos : [])
   },
 
   onToggleTodos: function () {
@@ -642,11 +660,17 @@ Page({
         })
         // 第一页落地后再补一次实时组：从列表进一条空历史的执行中会话时，
         // `_onSessions` 那一次 ensureThinkOpen 面对的是空块流（"空流不补"），
- // 等历史回来才该开。幂等守卫在 `_ensureThinkOpen` 里，重入不会开两组。
+        // 等历史回来才该开。幂等守卫在 `_ensureThinkOpen` 里，重入不会开两组。
         if (firstPage && self.data.running) {
           merged = self._ensureThinkOpen(merged)
         }
         self._commit(merged, { noScroll: !firstPage })
+        // 待办快照：只应用**第一页**（最新一页）——更早页的快照是过期的，
+        // 应用它等于把用户看到的清单往回拨。实时帧已经到过（_todoLive）就
+        // 一律不应用：后到者胜，历史不许盖实时。
+        if (first && self._replayTodos && !self._todoLive) {
+          self._setTodos(self._replayTodos)
+        }
       })
   },
 
@@ -674,6 +698,9 @@ Page({
    */
   _replayPage: function (items) {
     var existing = this.data.blocks
+    // 这一页里的最后一份待办快照（全量语义：后面的覆盖前面的）。没有就是 undefined——
+    // 调用方据此区分"这页没有待办"与"这页有一条空清单"。
+    this._replayTodos = undefined
 
     /**
      * 下面这几张表**只是"屏幕上已经有的东西"的快照，回放过程中绝不往里登记自己**。
@@ -703,6 +730,12 @@ Page({
     var out = []
     for (var k = 0; k < items.length; k++) {
       var it = items[k]
+      // 待办不进块流（它是"此刻的清单"，不是一条消息）：记下最后一份，
+      // 由 _loadHistory 在**第一页**落地时应用（更早页的是过期快照）。
+      if (it.t === 'ev.todo') {
+        if (Array.isArray(it.todos)) this._replayTodos = it.todos
+        continue
+      }
       if (it.t === 'ev.tool_event') {
         if (it.callId && onScreenTool[it.callId]) continue
         out = this._applyTool(out, it, false)
