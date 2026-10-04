@@ -234,6 +234,7 @@ Page({
     this._thinkTimer = null
     this._autoScroll = true
     this._flip = false
+    this._jumpAt = 0
     this._scrollH = 0
     this._historyBusy = false
     this._historyStarted = false
@@ -316,19 +317,29 @@ Page({
   },
 
   // ── 滚动：自动跟随 vs 用户回看 ────────────────────────────────────
+  /**
+   * 2026-10-04 重写。旧写法有一段"`deltaY < 0` 立刻停止跟随"的短路，它连**程序滚动**
+   * 一起毙：iOS 上 scroll-into-view 落底有回弹，尾帧 deltaY 是负的 —— 于是用户刚点完
+   * 「回到最新」，下一帧跟随就被关掉，按钮重新浮出来、后续 delta 不再跟滚
+   * （用户报的就是这个：点位在最新时要自动跟滚，回到最新之后也要）。
+   *
+   * 现在：**位置才是判据**（贴底就跟随，离开就停）。deltaY 保留但只当提前量用——
+   * 24px 容差内用户刚开始往上拖时就停，否则下一帧内容到位会把他拽回去；
+   * 而「回到最新」之后 600ms 内不认这个提前量（那期间的负 delta 是回弹，不是拖动）。
+   */
   onScroll: function (e) {
     var d = e.detail || {}
-    // 往上滑（内容下移）= 回看历史，立刻停止自动跟随，否则每一帧都会把他拽回来
-    if ((d.deltaY || 0) < 0) {
+    var h = this._scrollH
+    if (!h || typeof d.scrollHeight !== 'number') return
+    var atBottom = d.scrollTop + h >= d.scrollHeight - 24
+    var jumping = Date.now() - (this._jumpAt || 0) < 600
+    if (!jumping && (d.deltaY || 0) < 0) {
       if (this._autoScroll) {
         this._autoScroll = false
         this.setData({ atBottom: false })
       }
       return
     }
-    var h = this._scrollH
-    if (!h || typeof d.scrollHeight !== 'number') return
-    var atBottom = d.scrollTop + h >= d.scrollHeight - 24
     if (atBottom !== this._autoScroll) {
       this._autoScroll = atBottom
       this.setData({ atBottom: atBottom })
@@ -344,6 +355,8 @@ Page({
 
   onJumpLatest: function () {
     this._autoScroll = true
+    // 落底回弹的尾帧会是负 delta：给一个短窗口让它别把刚接上的跟随又关掉
+    this._jumpAt = Date.now()
     this.setData({ atBottom: true })
     this._scrollToBottom()
   },
@@ -519,6 +532,11 @@ Page({
           return
         }
         var items = page.items || []
+        // 第一页（此前一个块都没有）带的就是**最新**内容：必须落到底部。旧写法连第一页
+        // 也静默，用户每次打开会话都停在最旧处、得自己滚一遍（2026-10-04 用户报的
+        // 「自动滚动有点问题」的一半）。往前插**更早**内容时才继续静默——
+        // 那会把用户从刚读到的位置甩到最下面。
+        var firstPage = self.data.blocks.length === 0
         var replayed = self._replayPage(items)
         var merged = replayed.concat(self.data.blocks)
         self._historyBefore = typeof page.nextBeforeSeq === 'number' ? page.nextBeforeSeq : null
@@ -528,8 +546,7 @@ Page({
           historyLoadingMore: false,
           toView: anchor || self.data.toView,
         })
-        // 往前插内容时**不许**自动跟底：那会把用户从刚读到的位置甩到最下面
-        self._commit(merged, { noScroll: true })
+        self._commit(merged, { noScroll: !firstPage })
       })
   },
 
