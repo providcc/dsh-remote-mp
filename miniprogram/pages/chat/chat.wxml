@@ -320,6 +320,11 @@
     <view class="panel-head">
       <view class="panel-flag flag-brand"></view>
       <view class="panel-title">主机正在询问</view>
+      <!-- 本地倒数：主机那边到点就直接判"没答上"（协议里的 expiresAt），
+           不让用户看见这个时间走完，他就不知道自己按的选项什么时候失效。 -->
+      <view wx:if="{{pendingQuestion.remainSec > 0}}" class="panel-timer {{pendingQuestion.remainSec <= 20 ? 'urgent' : ''}}">
+        {{pendingQuestion.remainSec}}s
+      </view>
     </view>
 
     <block wx:for="{{pendingQuestion.questions}}" wx:for-item="q" wx:for-index="qi" wx:key="id">

@@ -299,7 +299,7 @@ Page({
     }
     this._flushDelta()
     this._stopThinkTick()
-    this._stopPermTick()
+    this._stopCardTick()
     if (this._off) {
       this._off()
       this._off = null
@@ -308,7 +308,7 @@ Page({
 
   onUnload: function () {
     this._stopThinkTick()
-    this._stopPermTick()
+    this._stopCardTick()
     if (this._off) {
       this._off()
       this._off = null
@@ -425,7 +425,9 @@ Page({
     if (p.t === 'ev.message_delta') return this._queueDelta(p)
     if (p.t === 'ev.tool_event') return this._onTool(p)
     if (p.t === 'ev.permission_request') return this._onPermission(p)
+    if (p.t === 'ev.permission_resolved') return this._onPermissionResolved(p)
     if (p.t === 'ev.question_request') return this._onQuestion(p)
+    if (p.t === 'ev.question_resolved') return this._onQuestionResolved(p)
     if (p.t === 'ev.run_state') return this._onRunState(p)
     if (p.t === 'ev.result') {
       if (!p.ok && p.message) wx.showToast({ title: String(p.message).slice(0, 40), icon: 'none' })
@@ -919,44 +921,56 @@ Page({
     })
     this._renderBar()
     if (wx.vibrateLong) wx.vibrateLong()
-    this._startPermTick()
+    this._startCardTick()
   },
 
-  /** 审批卡的本地倒数。宿主超时会自动拒绝，所以这里只负责"让人看见时间在走"。 */
-  _startPermTick: function () {
-    this._stopPermTick()
+  /**
+   * 挂着的卡片（审批与提问）共用的本地倒数。
+   *
+   * 为什么一张表管两张卡：这两张卡**可以同时挂着**（同一条会话里一个工具在等审批、
+   * 另一个在等回答），而屏幕上只有一个"还剩多久"的位置在各卡自己的头部。
+   * 原来那条 tick 只读 `pendingPermission`，所以提问卡就算带了 `expiresAt`
+   * 也不会有人替它走数——而主机那边 300 秒就直接判"没答上"了。
+   *
+   * 到点**不清空卡片**：本地先到期只说明"来不及了"，把卡撤掉会让人以为这次请求根本不存在。
+   * 真正该收卡的是 `ev.permission_resolved` / `ev.question_resolved`（精确到某一张）
+   * 或 `ev.run_state`（这一会话的两张一起收）。
+   */
+  _startCardTick: function () {
+    this._stopCardTick()
     var self = this
+    var keys = ['pendingPermission', 'pendingQuestion']
     var tick = function () {
-      var perm = self.data.pendingPermission
-      if (!perm || !perm.deadlineAt) {
-        self._stopPermTick()
+      var alive = false
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i]
+        var card = self.data[key]
+        if (!card || !card.deadlineAt) continue
+        var remain = Math.max(0, Math.round((card.deadlineAt - Date.now()) / 1000))
+        if (remain !== card.remainSec) {
+          // 只在**跨过整数秒**时 setData：一秒一次是对的，每帧一次会让整页重渲。
+          var patch = {}
+          patch[key + '.remainSec'] = remain
+          self.setData(patch)
+        }
+        if (remain > 0) alive = true
+      }
+      if (!alive) {
+        // 两张卡要么不在了、要么都走完：停表，否则它会永远每秒醒一次。
+        self._cardTimer = null
         return
       }
-      var remain = Math.max(0, Math.round((perm.deadlineAt - Date.now()) / 1000))
-      // 只在**跨过整数秒**时 setData：一秒一次是对的，每帧一次会让整页重渲。
-      if (remain === perm.remainSec) {
-        // 数字没变不代表没事干：到期后要停表，否则它会永远每秒醒一次。
-        if (remain <= 0) self._stopPermTick()
-        return
-      }
-      self.setData({ 'pendingPermission.remainSec': remain })
-      if (remain <= 0) {
-        self._stopPermTick()
-        // 不清空卡片：主机那边还在等一个决定，本地先到期只说明"来不及了"，
-        // 直接把卡撤掉会让人以为请求根本不存在。
-        return
-      }
-      self._permTimer = setTimeout(tick, 1000)
+      self._cardTimer = setTimeout(tick, 1000)
     }
     // **先立刻算一次**再排下一秒：否则卡片要挂整整一秒才显示数字，
     // 而那正是用户盯着"允许/拒绝"看的时候。
     tick()
   },
 
-  _stopPermTick: function () {
-    if (this._permTimer) {
-      clearTimeout(this._permTimer)
-      this._permTimer = null
+  _stopCardTick: function () {
+    if (this._cardTimer) {
+      clearTimeout(this._cardTimer)
+      this._cardTimer = null
     }
   },
 
@@ -971,9 +985,48 @@ Page({
         }),
       }
     })
-    this.setData({ pendingQuestion: { requestId: p.requestId, questions: qs, freeText: '' }, running: false })
+    this.setData({
+      pendingQuestion: {
+        requestId: p.requestId,
+        questions: qs,
+        freeText: '',
+        // 主机这一侧 300 秒就直接判"没答上"了，而这张卡以前**没有任何倒计时**：
+        // 用户看不见自己按的按钮什么时候作废（协议里刚补的 expiresAt，老宿主不发就是 0/不走表）。
+        deadlineAt: p.expiresAt ? Date.parse(p.expiresAt) : 0,
+        remainSec: 0,
+      },
+      running: false,
+    })
     this._renderBar()
     if (wx.vibrateLong) wx.vibrateLong()
+    this._startCardTick()
+  },
+
+  /**
+   * 「这张审批卡不用答了」——桌面先答了，或者这次请求被撤回/超时。
+   *
+   * 只收**对得上 requestId 的那一张**：粗收单那条路（`ev.run_state`）会把这一会话两张卡一起收掉，
+   * 这条精确帧负责"只收这一张"。两条主机都发，是因为**手机上装的老版本只认 `ev.run_state`**
+   * （分发是一串 `if (p.t === …)`，认不出的 `t` 静默忽略）。
+   *
+   * 这里**不动 `running`**：桌面先答意味着回合还在跑，而这件事由随后那帧
+   * `ev.run_state` 说（主机把两张帧都发了），两处各改一半迟早会打架。
+   */
+  _onPermissionResolved: function (p) {
+    var perm = this.data.pendingPermission
+    if (!perm) return
+    if (p.requestId && p.requestId !== perm.requestId) return // 不是这一张，别误收
+    this.setData({ pendingPermission: null })
+    this._renderBar()
+  },
+
+  /** 提问卡那条的同款：按 requestId 收，不动运行态。 */
+  _onQuestionResolved: function (p) {
+    var question = this.data.pendingQuestion
+    if (!question) return
+    if (p.requestId && p.requestId !== question.requestId) return
+    this.setData({ pendingQuestion: null })
+    this._renderBar()
   },
 
   /**
@@ -986,7 +1039,7 @@ Page({
     if (!running) blocks = this._closeThink(blocks)
     // 这条帧是"挂着的审批/提问已经作废"的唯一信号（只有 running/idle 会发），
     // 所以收起卡片的同时必须停掉那个还在走的表，否则它会一直 setData 到天荒地老。
-    if (this.data.pendingPermission || this.data.pendingQuestion) this._stopPermTick()
+    if (this.data.pendingPermission || this.data.pendingQuestion) this._stopCardTick()
     this.setData({ running: running, pendingPermission: null, pendingQuestion: null })
     if (running) {
       this._startThinkTick()
@@ -1275,7 +1328,7 @@ Page({
     var decision = e.currentTarget.dataset.decision
     var perm = this.data.pendingPermission
     if (!perm) return
-    this._stopPermTick()
+    this._stopCardTick()
     this.setData({ pendingPermission: null, running: decision !== 'reject' })
     this._renderBar()
     this.client.resolvePermission(this.data.sessionId, perm.requestId, decision)
