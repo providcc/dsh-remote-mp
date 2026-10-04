@@ -240,6 +240,28 @@
   color: var(--td-text-color-secondary, #5c6470);
 }
 
+/* 主机卡里的「解除配对」（2026-10-04 从页面底部挪进来）。
+   卡片回答的是"这台主机通不通"，"不要这台了"就属于这张卡——
+   原来沉在页面最底部，旁边还挨着一颗多余的入口（已删）。 */
+.host-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 20rpx;
+  padding-top: 16rpx;
+  border-top: 2rpx solid var(--td-component-border, #dcdcdc);
+}
+
+/* 破坏性动作但**不当主角**：不用实心红（这一页的主动作是新建会话，
+   实心红会抢），浅红底 + 红字，扫一眼知道"这个会断"就够了。
+   颜色与 app.wxss 里那颗 error 角标同一对 token（对比度检查认这两条）。 */
+.host-danger {
+  padding: 8rpx 24rpx;
+  border-radius: 999rpx;
+  font-size: 24rpx;
+  background: var(--td-error-color-1, #fff0ed);
+  color: var(--td-error-color-6, #d54941);
+}
+
 /* ── 会话列表 ───────────────────────────────────────────────────── */
 .section-title {
   display: flex;
@@ -402,7 +424,7 @@
   background: var(--td-brand-color, #0052d9);
 }
 
-/* ── 底部：重新配对 / 解除配对 / 外观切换 ──────────────────────────────
+/* ── 底部：只剩外观切换（配对相关动作 2026-10-04 收进主机卡）────────────────────────────────────
    放底部而不是顶栏：这些是"偶尔改一次"的设置，顶栏是窗口控制条，
    塞设置会把运行态的信息挤掉。
    图形用 CSS 画（半边月 / 圆饼），不用 t-icon —— 图标字体走远程 CDN，
@@ -410,14 +432,8 @@
 .footer-row {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   margin-top: 24rpx;
-}
-
-/* 两个文字入口在左，主题切换靠右。给文字入口一点右间距，
-   否则「重新配对」「解除配对」会挤在一起读成一句。 */
-.footer-row .footer-link {
-  margin-top: 0;
-  margin-right: 32rpx;
 }
 
 .theme-toggle {

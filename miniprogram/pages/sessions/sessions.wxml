@@ -109,6 +109,14 @@
         <view class="pill {{statusTheme}}">{{statusLabel}}</view>
       </view>
       <view class="host-sub ellipsis">{{statusText || '已就绪'}}</view>
+
+      <!-- 解除配对：**在这张卡上**（2026-10-04 用户要求从底部挪进来）。
+           这张卡写的就是"现在连的是哪台主机、通不通"，"不要这台了"是它的动作，
+           沉在页面最底部没人找得到。底部原来挨着的那颗多余入口同时删除：
+           先解除、再扫码就是再来一次，多一颗按钮只多一次误触。 -->
+      <view class="host-actions">
+        <view class="host-danger" hover-class="pressed" hover-stay-time="80" bindtap="onUnpair">解除配对</view>
+      </view>
     </view>
 
     <!-- 分区标题右侧放「新建会话」：它是这一页的主动作，跟着列表走。
@@ -165,12 +173,9 @@
     <!-- 归档会话被藏起来了，得留一句话，否则用户会以为会话丢了 -->
     <view wx:if="{{hiddenText}}" class="hidden-note">{{hiddenText}}</view>
 
-    <!-- 底部：不常用但要能改的东西。重新配对**就地重新扫码**，不再跳页；
-         解除配对必须在这里有位置 —— pair 页删掉之后，这里是唯一的入口，
-         藏着的话用户就再也没法解除了。 -->
+    <!-- 底部只剩主题切换：配对相关的动作都收到主机卡上去了
+         （解除配对在卡里，旁边那颗多余入口 2026-10-04 删除——先解除再扫码即可）。 -->
     <view class="footer-row">
-      <view class="footer-link dim" hover-class="pressed" bindtap="onScan">重新配对</view>
-      <view class="footer-link dim" hover-class="pressed" bindtap="onUnpair">解除配对</view>
       <view class="theme-toggle" hover-class="pressed" hover-stay-time="80" bindtap="onToggleTheme">
         <view class="theme-glyph {{themeName}}"></view>
         <text>{{themeName === 'dark' ? '浅色' : '深色'}}</text>
