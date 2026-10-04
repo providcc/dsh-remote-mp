@@ -404,8 +404,19 @@ class DrcClient {
     return this.sendCmd({ t: 'cmd.list_sessions', cmdId: this.newCmdId() })
   }
 
-  sendPrompt(sessionId, text) {
-    return this.sendCmd({ t: 'cmd.send_prompt', cmdId: this.newCmdId(), sessionId: sessionId, text: text })
+  /**
+   * 发一条指令。images 是可选附件（wire 1.3.0 起）：本机压缩过的 jpeg，
+   * **只映射协议要的字段**——本地路径（path）之类都不上线。
+   * 一条最多 4 张（协议层上限）；调用方（chat 页）已经按这个数收过一轮。
+   */
+  sendPrompt(sessionId, text, images) {
+    var cmd = { t: 'cmd.send_prompt', cmdId: this.newCmdId(), sessionId: sessionId, text: text }
+    if (images && images.length) {
+      cmd.images = images.slice(0, 4).map(function (a) {
+        return { name: a.name, mediaType: 'image/jpeg', data: a.data, width: a.width, height: a.height }
+      })
+    }
+    return this.sendCmd(cmd)
   }
 
   interrupt(sessionId) {

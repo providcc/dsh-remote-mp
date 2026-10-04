@@ -103,7 +103,18 @@
                这样 .blk 不用改成 flex，其它块的布局一点不受影响。 -->
           <view wx:elif="{{item.kind === 'user'}}" class="user-row">
             <view class="user">
-              <view class="user-text">{{item.text}}</view>
+              <!-- 附件缩略图：本机临时文件， best-effort 显示（被微信清了就只剩占位） -->
+              <block wx:if="{{item.images && item.images.length}}">
+                <view class="user-images">
+                  <image
+                    class="user-img"
+                    wx:for="{{item.images}}"
+                    wx:key="path"
+                    src="{{item.path}}"
+                    mode="aspectFill" />
+                </view>
+              </block>
+              <view wx:if="{{item.text}}" class="user-text">{{item.text}}</view>
             </view>
           </view>
 
@@ -363,9 +374,46 @@
     </view>
   </view>
 
-  <!-- 输入区：胶囊输入框 + 右侧「发送」文字按钮。
+  <!-- 排队中的消息：贴在输入区上方。默认展开；长队列收成一行汇总——
+       不许把消息区顶掉（用户报过的要求：可收起、超长截断）。 -->
+  <view wx:if="{{queue.length}}" class="queue">
+    <view class="queue-head" hover-class="pressed" hover-stay-time="60" bindtap="onToggleQueue">
+      <text class="queue-title">排队中 {{queue.length}} 条</text>
+      <text class="queue-toggle">{{queueOpen ? '收起' : '展开'}}</text>
+    </view>
+    <block wx:if="{{queueOpen}}">
+      <view class="queue-item" wx:for="{{queue}}" wx:key="key">
+        <view class="queue-index">{{index + 1}}</view>
+        <view class="queue-body">
+          <!-- 超长文本截断靠 wxss 的 ellipsis；一条只有图时文字位给一句人话 -->
+          <view class="queue-text">{{item.text || ('图片 ' + item.images.length + ' 张')}}</view>
+          <block wx:if="{{item.images.length}}">
+            <image class="queue-thumb" wx:for="{{item.images}}" wx:for-item="img" wx:key="path" src="{{img.path}}" mode="aspectFill" />
+          </block>
+        </view>
+        <view class="queue-del" hover-class="pressed" catchtap="onDequeue" data-key="{{item.key}}">×</view>
+      </view>
+    </block>
+  </view>
+
+  <!-- 待发送的图片附件：缩略图条 + 逐个移除。选中即在本机，不发也能撤。 -->
+  <view wx:if="{{attachments.length}}" class="attach">
+    <view class="attach-item" wx:for="{{attachments}}" wx:key="path">
+      <image class="attach-thumb" src="{{item.path}}" mode="aspectFill" />
+      <view class="attach-del" hover-class="pressed" catchtap="onRemoveAttachment" data-path="{{item.path}}">×</view>
+    </view>
+    <view class="attach-hint">随下一条消息发出</view>
+  </view>
+
+  <!-- 输入区：左侧加号（附件入口）+ 胶囊输入框 + 右侧「发送」文字按钮。
        catchtap：点输入框本身不该被外层当成"点了空白"而收键盘 -->
   <view class="composer" catchtap="onNoop">
+    <!-- 加号：这一代只放"图片"（相册）。拍照与文件留白但话说明白——
+         入口撒谎比没有入口更糟。 -->
+    <view class="composer-plus" hover-class="pressed" hover-stay-time="60" bindtap="onAttach">
+      <view class="plus-bar"></view>
+      <view class="plus-bar plus-bar-v"></view>
+    </view>
     <view class="composer-pill">
       <input
         class="composer-input"

@@ -57,6 +57,18 @@ var markdown = require('../../core/markdown.js')
  */
 var SHOW_STEPS = true
 var MAX_BLOCKS = 400
+
+/**
+ * 图片附件的两条参数（与 wire 的 imageAttachment 对齐）。
+ *
+ * MAX_IMAGES = 4：协议层的上限就是 4（再多对"看清楚"没帮助，只是把帧撑爆——
+ * 中继 maxMessageBytes 是硬上限，超了整条帧被掐）。
+ * IMAGE_QUALITY = 0.6：截图/报错这一类用途完全够。⚠️ compressImage 的 quality
+ * **在 Android 上被系统忽略**（真机只会按 sizeType 压一次），所以这只是"尽力"，
+ * 真正的体积纪律是 sizeType: ['compressed'] + chooseMedia 的 count 上限。
+ */
+var MAX_IMAGES = 4
+var IMAGE_QUALITY = 0.6
 var MAX_TEXT_PER_BLOCK = 20000
 var DELTA_FLUSH_MS = 100
 var DELTA_FLUSH_CHARS = 4096
@@ -164,6 +176,16 @@ Page({
     toView: 'anchor-a',
     /** 是否已贴底。false 时浮出「回到最新」 */
     atBottom: true,
+    /**
+     * 排队中的消息（2026-10-04 加）。会话在跑时用户继续打的内容进这里，
+     * 空闲按序发出——AI 干活时人不会闲着，这是最自然的用法。
+     * 一项：`{key, text, images:[{name,path,width,height}]}`。
+     */
+    queue: [],
+    /** 队列默认展开； collapsing 之后只留一行汇总（长队列不许把消息区顶掉）。 */
+    queueOpen: true,
+    /** 输入区上方待发送的图片附件（本地压缩后的临时文件）。 */
+    attachments: [],
     /** 顶栏：连接状态。模型（`modelName`）跟在它后面同一行，运行态由步骤组的实时标签说 */
     barText: '',
     barTheme: 'default',
@@ -236,6 +258,7 @@ Page({
     this._flip = false
     this._jumpAt = 0
     this._scrollH = 0
+    this._draining = false
     this._historyBusy = false
     this._historyStarted = false
     /** 翻页游标：由主机给，原样回传。null = 已经到最早了 */
@@ -456,7 +479,10 @@ Page({
       var running = rows[i].running === true
       if (running === this.data.running) return
       this.setData({ running: running })
-      if (!running) this._stopThinkTick()
+      if (!running) {
+        this._stopThinkTick()
+        this._drainQueue()
+      }
       this._renderBar()
       return
     }
@@ -1066,6 +1092,10 @@ Page({
     }
     this._renderBar()
     this._commit(blocks)
+    // 刚闲下来：排队里的消息按序发（用户打了一句"继续"多半就是这个时刻）。
+    // ⚠️ 必须放在这次 commit **之后**：_sendNow 自己会再 commit 一次（本地回显），
+    // 而上面那个 blocks 是进水前的快照——先排水的话这一句会把回显整段盖掉。
+    if (!running) this._drainQueue()
   },
 
   // ── 步骤组的动作 ──────────────────────────────────────────────────
@@ -1318,8 +1348,19 @@ Page({
 
   onSend: function () {
     var text = String(this.data.inputText || '').trim()
-    if (!text) return
+    var images = this.data.attachments.slice()
+    if (!text && !images.length) return
     if (!this.data.sessionId) return
+    this.setData({ inputText: '', attachments: [] })
+    if (this.data.running) {
+      this._enqueue(text, images)
+      return
+    }
+    this._sendNow(text, images)
+  },
+
+  /** 空闲：本地回显 + 立刻发。 */
+  _sendNow: function (text, images) {
     // 轮次号交给 `_commit` 重排（它知道历史那一侧已经占了多少轮），这里只给时间
     var blocks = this._append(this.data.blocks, {
       key: 'r' + this._counter++,
@@ -1327,12 +1368,136 @@ Page({
       label: '',
       time: clockText(Date.now()),
     })
-    blocks = this._append(blocks, { key: 'u' + this._counter++, kind: 'user', text: text, confirmed: false })
+    blocks = this._append(blocks, {
+      key: 'u' + this._counter++,
+      kind: 'user',
+      text: text,
+      confirmed: false,
+      // 附件跟着这条回显一起显示：本机临时文件，会话里看得见（主机存的是另一份）
+      images: images,
+    })
     // 自己发的消息必须看到
     this._autoScroll = true
-    this.setData({ inputText: '', atBottom: true })
+    this.setData({ atBottom: true })
     this._commit(blocks)
-    this.client.sendPrompt(this.data.sessionId, text)
+    this.client.sendPrompt(this.data.sessionId, text, images)
+  },
+
+  /** 在跑：进队列。”先进先出+可删+可收起“三条都在这：队列是用户看得见的承诺，不是黑洞。 */
+  _enqueue: function (text, images) {
+    var item = { key: 'q' + this._counter++, text: text, images: images }
+    this.setData({
+      queue: this.data.queue.concat([item]),
+      queueOpen: true,
+    })
+    if (wx.vibrateShort) wx.vibrateShort({ type: 'light' })
+  },
+
+  onToggleQueue: function () {
+    this.setData({ queueOpen: !this.data.queueOpen })
+  },
+
+  // ── 图片附件：加号 → 相册（拍照与文件这一代先不做，话在动作条里说明白）───
+  onAttach: function () {
+    var self = this
+    var room = MAX_IMAGES - this.data.attachments.length
+    if (room <= 0) {
+      wx.showToast({ title: '一条消息最多带 ' + MAX_IMAGES + ' 张图', icon: 'none' })
+      return
+    }
+    wx.showActionSheet({
+      itemList: ['图片（从相册选）'],
+      success: function (res) {
+        if (res.tapIndex !== 0) return
+        wx.chooseMedia({
+          count: room,
+          mediaType: ['image'],
+          sizeType: ['compressed'],
+          success: function (r) {
+            self._compressPicked(r.tempFiles || [])
+          },
+        })
+      },
+    })
+  },
+
+  /** 逐张压缩 → 读成 base64。压缩失败不挡路：原图也能发（体积的事用户自己能看）。 */
+  _compressPicked: function (files) {
+    var self = this
+    var out = []
+    var i = 0
+    var next = function () {
+      if (i >= files.length) {
+        self.setData({ attachments: self.data.attachments.concat(out).slice(0, MAX_IMAGES) })
+        return
+      }
+      var f = files[i++]
+      wx.compressImage({
+        src: f.path,
+        quality: IMAGE_QUALITY,
+        success: function (c) {
+          self._readAsBase64(c.tempFilePath, f, out, next)
+        },
+        fail: function () {
+          self._readAsBase64(f.path, f, out, next)
+        },
+      })
+    }
+    next()
+  },
+
+  _readAsBase64: function (path, meta, out, done) {
+    wx.getFileSystemManager().readFile({
+      filePath: path,
+      encoding: 'base64',
+      success: function (r) {
+        out.push({
+          name: 'img-' + Date.now() + '-' + out.length + '.jpg',
+          // path 只在本机显示用（回显缩略图）；**不上线**（ sendPrompt 只映射 wire 要的字段）
+          path: path,
+          data: String(r.data || ''),
+          width: meta.width,
+          height: meta.height,
+        })
+        done()
+      },
+      fail: function () {
+        wx.showToast({ title: '这张图读不出来', icon: 'none' })
+        done()
+      },
+    })
+  },
+
+  onRemoveAttachment: function (e) {
+    var path = e.currentTarget.dataset.path
+    this.setData({
+      attachments: this.data.attachments.filter(function (a) {
+        return a.path !== path
+      }),
+    })
+  },
+
+  /** 从队列里撤回一条（还没发出去，撤就是真撤）。 */
+  onDequeue: function (e) {
+    var key = e.currentTarget.dataset.key
+    this.setData({ queue: this.data.queue.filter(function (q) { return q.key !== key }) })
+  },
+
+  /** 会话从在跑变成空闲：把队列按序发出去。 */
+  _drainQueue: function () {
+    if (this._draining) return
+    var queue = this.data.queue.slice()
+    if (!queue.length) return
+    var next = queue.shift()
+    this.setData({ queue: queue })
+    this._draining = true
+    var self = this
+    this._sendNow(next.text, next.images)
+    // 两条之间留一拍：内核那边一条回合刚结束，立刻塞下一条容易吃满排队。
+    setTimeout(function () {
+      self._draining = false
+      self._drainQueue()
+    }, 800)
   },
 
   onInterrupt: function () {

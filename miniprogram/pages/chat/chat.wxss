@@ -848,3 +848,166 @@
 .composer-send.off .send-label {
   color: var(--td-text-color-placeholder);
 }
+
+/* ── 排队消息（贴在输入区上方）────────────────────────────────────── */
+.queue {
+  flex: 0 0 auto;
+  max-height: 260rpx;
+  overflow: hidden;
+  background: var(--td-bg-color-secondarycontainer);
+  border-top: 2rpx solid var(--td-component-border);
+}
+
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12rpx 24rpx;
+}
+
+.queue-title {
+  font-size: 24rpx;
+  color: var(--td-text-color-secondary);
+}
+
+.queue-toggle {
+  font-size: 24rpx;
+  color: var(--td-text-color-primary);
+}
+
+.queue-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 8rpx 24rpx 12rpx;
+}
+
+.queue-index {
+  flex: 0 0 auto;
+  width: 32rpx;
+  height: 32rpx;
+  border-radius: 50%;
+  background: var(--td-brand-color-light);
+  color: var(--td-text-color-brand);
+  font-size: 20rpx;
+  line-height: 32rpx;
+  text-align: center;
+  margin-right: 12rpx;
+  margin-top: 4rpx;
+}
+
+/* 超长文本截断：一行写完，写不下省略号（用户要求：不许把输入区顶开）。 */
+.queue-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.queue-text {
+  font-size: 26rpx;
+  color: var(--td-text-color-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-thumb {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 8rpx;
+  margin-right: 8rpx;
+  margin-top: 8rpx;
+}
+
+.queue-del {
+  flex: 0 0 auto;
+  width: 44rpx;
+  height: 44rpx;
+  line-height: 40rpx;
+  text-align: center;
+  border-radius: 50%;
+  font-size: 32rpx;
+  color: var(--td-text-color-placeholder);
+  margin-left: 8rpx;
+}
+
+/* ── 图片附件（待发送）────────────────────────────────────────────── */
+.attach {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 12rpx 24rpx 0;
+  background: var(--td-bg-color-container);
+}
+
+.attach-item {
+  position: relative;
+  margin-right: 16rpx;
+}
+
+.attach-thumb {
+  width: 120rpx;
+  height: 120rpx;
+  border-radius: 12rpx;
+  background: var(--td-bg-color-secondarycontainer);
+}
+
+.attach-del {
+  position: absolute;
+  top: -8rpx;
+  right: -8rpx;
+  width: 36rpx;
+  height: 36rpx;
+  line-height: 34rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: #4b4b4b;
+  color: #ffffff;
+  font-size: 26rpx;
+}
+
+.attach-hint {
+  font-size: 22rpx;
+  color: var(--td-text-color-placeholder);
+}
+
+/* ── 输入区左侧加号（附件入口）────────────────────────────────────── */
+.composer-plus {
+  position: relative;
+  flex: 0 0 auto;
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 50%;
+  background: var(--td-bg-color-secondarycontainer);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 16rpx;
+}
+
+/* 加号 = 一横一竖两根小条（不引图标库；这一页目前一个图标组件都没用）。 */
+.plus-bar {
+  position: absolute;
+  width: 28rpx;
+  height: 4rpx;
+  border-radius: 2rpx;
+  background: var(--td-text-color-secondary);
+}
+
+.plus-bar-v {
+  transform: rotate(90deg);
+}
+
+/* ── 用户气泡里的附件缩略图 ───────────────────────────────────────── */
+.user-images {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 12rpx;
+}
+
+.user-img {
+  width: 180rpx;
+  height: 180rpx;
+  border-radius: 12rpx;
+  margin-right: 12rpx;
+  margin-bottom: 12rpx;
+  background: var(--td-bg-color-secondarycontainer);
+}
