@@ -162,6 +162,11 @@ Page({
   },
 
   onShow: function () {
+    // 系统栏要在**每次 onShow** 重设一次：setNavigationBarColor 是每页实例一次性生效的，
+    // 从别的页返回时微信会用 page json / app.json 的静态配色（#ffffff）把顶栏冲掉 ——
+    // 深色下就是" sessions 页头顶一条白、chat 页正常"（chat 页的 onShow 一直在重设，
+    // 2026-10-04 用户实测报了这个不一致）。onLoad 只保证首屏。
+    theme.applyTo(this)
     this._off = this.client.on(this._onEvent.bind(this))
     this._sync()
     if (!this.client.isPaired()) {
