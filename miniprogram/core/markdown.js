@@ -51,8 +51,11 @@ var PALETTE = {
     text: '#e8e8e8', // 深色下正文必须够亮（本项目踩过"字全黑"）
     muted: '#9a9a9a',
     rule: '#3a3a3a',
-    codeBg: '#242424',
-    quoteBg: '#1e1e1e',
+    // 正文卡深色下是 #2c2c2c（见 chat.wxss 的 .theme-dark .reply）。
+    // codeBg 比卡片**亮一档**（曾经与卡片同色 → 代码块整块消失，2026-10-04 修）；
+    // quoteBg 暗一档当"内嵌"用（引用块与表头），也是那时候一起抬起来的。
+    codeBg: '#333333',
+    quoteBg: '#262626',
     link: '#5a9bff'
   }
 }
