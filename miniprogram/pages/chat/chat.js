@@ -291,6 +291,8 @@ Page({
     // 记下 markdown 是按哪个主题排的版：`_retheme` 靠它判断"要不要重排"。
     // 不在这里记住的话，首次 onShow 会误判成"主题变了"而白重排一次
     // （那时 blocks 还是空的，等于空跑；不致命但说明状态没初始化对）。
+    /** 曾经断过链：用来认出"重连成功"那一刻（见 _onEvent 的 status 分支）。 */
+    this._wasOffline = false
     this._mdTheme = theme.current()
     theme.applyTo(this)
     var id = decodeURIComponent(options.id || '')
@@ -489,6 +491,28 @@ Page({
       this._renderBar()
       // 进这一页时可能还没连上（或刚配对完）。连上那一刻就是能取历史的时机。
       this._maybeLoadHistory()
+      // **断链重连后要把落下的那一段补回来**（2026-10-05 用户：
+      // 「chat 页激活时断链，重连后信息流就停止刷新」）。
+      //
+      // 为什么只 _maybeLoadHistory 不够：它第一句就是
+      // `if (this._historyStarted …) return`，而那个标志**一辈子只置真一次**。
+      // 于是重连成功时它直接返回 —— 断链期间主机上跑完的那些步骤、工具、
+      // 回复一条都补不回来，而主机重连后也不会主动推历史（它只发 resync）。
+      // 表现就是：页面还活着、顶栏还亮着，但消息流从此静止。
+      //
+      // 所以这里显式清掉"已经取过"的三个标志，让它按老路径重新读一遍。
+      // 用 _historyStarted 复位而不是加一个重连专用分支，是因为复读历史
+      // 这条路本来就在（进会话、首次连上），复用它才不会漏掉它的那些守卫。
+      if (evt.status === 'online' && this._wasOffline) {
+        this._wasOffline = false
+        this._historyStarted = false
+        this._historyBusy = false
+        // 断了多久不知道，但主机那边的会话状态一定变了 —— 顶栏那个
+        // 「运行中」要重新问一次，否则它会一直停在上一次的值上。
+        this.client.listSessions()
+      }
+      // 记下"曾经断过"，onHide/unload 之外的断开都走上面那条。
+      if (evt.status === 'connecting' || evt.status === 'idle') this._wasOffline = true
       return
     }
     if (evt.kind === 'error') {
