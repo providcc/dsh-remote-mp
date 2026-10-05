@@ -70,8 +70,6 @@ var MAX_BLOCKS = 400
  */
 var MAX_ATTACH = 4
 var IMAGE_QUALITY = 0.6
-/** 分段进度条最多几格（多了就把前 7 条画出来，最后一格表示还有更多）。 */
-var TODO_SEG_MAX = 8
 /**
  * 图片压到多小：长边钉死在这个像素数。
  *
@@ -222,7 +220,6 @@ Page({
      */
     todos: [],
     /** 分段进度条：每条待办一格，超过 8 条时前 7 格 + 一个"还有更多"。 */
-    todoSegs: [],
     /** 待办面板默认收起：只报进度，展开是临时的（点消息区就收回）。 */
     todosOpen: false,
     /** 收起来时那一行的三个派生值：完成数 / 有没有在跑的 / 在跑的那条正文。
@@ -619,22 +616,6 @@ Page({
    * - 派生值（完成数 / 在进行哪条）在这里算完，wxml 里不做运算；
    * - 清单空了收回展开态：内核清空 todo 时不该留一个展开的空面板。
    */
-  /**
-   * 分段进度条的数据源：每条待办出一格（`completed` / `in_progress` / `pending`），
-   * 超过 {@link TODO_SEG_MAX} 条时只出前 7 格、最后一格是 `more` 表示"还有更多"。
-   *
-   * 为什么要截：50 条待办会把每格压成一丝，那时候"进度"这个信息反而没了。
-   * 截断只发生在这一格可视化上——展开面板里该有多少条还是多少条。
-   */
-  _todoSegs: function (todos) {
-    var out = []
-    for (var i = 0; i < todos.length && i < TODO_SEG_MAX - 1; i++) {
-      var st = todos[i].status
-      out.push(st === 'completed' || st === 'in_progress' ? st : 'pending')
-    }
-    if (todos.length > TODO_SEG_MAX - 1) out.push('more')
-    return out
-  },
 
   _setTodos: function (todos) {
     var same =
@@ -654,7 +635,6 @@ Page({
     }
     this.setData({
       todos: todos,
-      todoSegs: this._todoSegs(todos),
       todoDone: done,
       todoRunning: live ? 1 : 0,
       todoRunningText: live ? '进行中 ' + live.slice(0, 30) : '',

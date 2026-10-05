@@ -70,46 +70,14 @@
 
 /* 分段进度：一格一条。completed 实心、in_progress 半高（进行到一半）、
    pending 空心。不用字体图标也不用 emoji——真机上缺字形会显示成方框。 */
-.todo-segs {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8rpx;
-  margin-right: 18rpx;
-}
 
 /* 一格一条。尺寸定在 26×12：再小（第一版 18×8）在真机上根本读不出"格子"，
    只看见一条虚线；再大就开始跟右边的计数抢主角。 */
-.todo-seg {
-  width: 26rpx;
-  height: 12rpx;
-  border-radius: 6rpx;
-  background: transparent;
-  border: 2rpx solid var(--td-text-color-placeholder);
-  box-sizing: border-box;
-}
 
-.todo-seg-completed {
-  border-color: var(--td-brand-color);
-  background: var(--td-brand-color);
-}
 
 /* 进行中：只填下半——"进行到一半"是个一眼符号，比一个实点更像在动。 */
-.todo-seg-in_progress {
-  border-color: var(--td-brand-color);
-  background: linear-gradient(to top, var(--td-brand-color) 50%, transparent 50%);
-}
 
 /* 第七条之后的那一格：还有更多条目，但这一行不打算把它们全画出来。 */
-.todo-seg-more {
-  width: 12rpx;
-  border-color: var(--td-text-color-placeholder);
-  border-left-width: 0;
-  border-radius: 0 4rpx 4rpx 0;
-  border-right-width: 6rpx;
-  border-style: dashed;
-  border-right-style: solid;
-}
 
 .todo-count {
   flex: 0 0 auto;
@@ -162,7 +130,10 @@
 }
 
 /* 三角： sessions 页"手动输入"那一颗同一画法（两条 border 转出来的，无字形依赖）。 */
-.caret {
+/* 折叠三角。类名带 todo- 前缀是**必须的**：文件后面还有一条 .caret，那是
+   用户消息里"正在输入"的光标（蓝色、1s 一闪），同名会把这条三角顶掉，
+   于是待办条的收起箭头变成一根一直在闪的光标（2026-10-05 用户报）。 */
+.todo-caret {
   width: 0;
   height: 0;
   border-left: 8rpx solid transparent;
@@ -170,7 +141,7 @@
   border-top: 9rpx solid var(--td-text-color-placeholder);
 }
 
-.caret-up {
+.todo-caret-up {
   border-top: 0;
   border-bottom: 9rpx solid var(--td-text-color-placeholder);
 }
