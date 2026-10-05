@@ -512,12 +512,20 @@ Page({
     if (evt.kind !== 'payload') return
     var p = evt.payload
 
-    // 模型是**全局**的，必须在下面那句会话过滤**之前**判。
-    // 协议上 `ev.model` 不带 sessionId，所以那句现在对它不成立；但一旦有人
-    // 为了排障给它补上 sessionId（或者帧里混进了别的字段），模型名就会静默
-    // 变成空白 —— 而"模型名空白"看着像主机没给模型，排查方向会被带偏。
-    if (p.t === 'ev.model') return this._onModel(p)
+    // 会话过滤（**ev.model 也在内**）。
+    //
+    // 这里原来有一句「模型是全局的，必须在过滤之前判」的豁免——2026-10-05 用户
+    // 实测到的串台就是它造成的：本会话跑 space-bunny-free，顶栏却显示别的会话
+    // 切出来的 muse-spark，因为别的会话一推模型帧，这里就直接 setData 覆盖了。
+    // 现在 ev.model 带 sessionId（wire 1.8.0），模型与其他事件走同一句过滤。
+    if (p.sessionId && p.sessionId !== this.data.sessionId) return // 不是本会话
 
+    // 老主机的 ev.model 不带 sessionId（那时它就是全局的）：只在**本会话确实还没
+    // 拿到过模型**时用它兜底，绝不让别的会话的帧覆盖已有的正确值。
+    if (p.t === 'ev.model') {
+      if (p.sessionId || !this.data.modelName) this._onModel(p)
+      return
+    }
     if (p.sessionId && p.sessionId !== this.data.sessionId) return // 不是本会话
 
     // 会话列表是"这条会话此刻在不在跑"的权威来源。这一页原来完全没看它，
