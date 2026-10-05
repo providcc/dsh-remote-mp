@@ -68,6 +68,13 @@ var MAX_BLOCKS = 400
  * **在 Android 上被系统忽略**（真机只会按 sizeType 压一次），所以这只是"尽力"，
  * 真正的体积纪律是 sizeType: ['compressed'] + chooseMedia 的 count 上限。
  */
+/** 贴底容差（px）：差这么多以内就算还贴着底。
+ *  比 0 大是因为 iOS 落底会有回弹，正好差半个像素的位置会被判成"离开了"，
+ *  于是跟随莫名其妙断掉 —— 用户报的就是这个。 */
+var SCROLL_BOTTOM_SLOP = 24
+/** 自作滚动之后、认定回弹帧的时间窗（ms）。只覆盖我们自己触发的那次滚动。 */
+var SCROLL_REBOUND_MS = 600
+
 var MAX_ATTACH = 4
 var IMAGE_QUALITY = 0.6
 /**
@@ -303,7 +310,9 @@ Page({
     this._thinkTimer = null
     this._autoScroll = true
     this._flip = false
-    this._jumpAt = 0
+    this._SCROLL_BOTTOM_SLOP = SCROLL_BOTTOM_SLOP
+    this._SCROLL_REBOUND_MS = SCROLL_REBOUND_MS
+    this._programmaticUntil = 0
     this._scrollH = 0
     this._draining = false
     this._historyBusy = false
@@ -392,32 +401,40 @@ Page({
   },
 
   // ── 滚动：自动跟随 vs 用户回看 ────────────────────────────────────
-  /**
-   * 2026-10-04 重写。旧写法有一段"`deltaY < 0` 立刻停止跟随"的短路，它连**程序滚动**
-   * 一起毙：iOS 上 scroll-into-view 落底有回弹，尾帧 deltaY 是负的 —— 于是用户刚点完
-   * 「回到最新」，下一帧跟随就被关掉，按钮重新浮出来、后续 delta 不再跟滚
-   * （用户报的就是这个：点位在最新时要自动跟滚，回到最新之后也要）。
-   *
-   * 现在：**位置才是判据**（贴底就跟随，离开就停）。deltaY 保留但只当提前量用——
-   * 24px 容差内用户刚开始往上拖时就停，否则下一帧内容到位会把他拽回去；
-   * 而「回到最新」之后 600ms 内不认这个提前量（那期间的负 delta 是回弹，不是拖动）。
-   */
   onScroll: function (e) {
     var d = e.detail || {}
     var h = this._scrollH
     if (!h || typeof d.scrollHeight !== 'number') return
-    var atBottom = d.scrollTop + h >= d.scrollHeight - 24
-    var jumping = Date.now() - (this._jumpAt || 0) < 600
-    if (!jumping && (d.deltaY || 0) < 0) {
-      if (this._autoScroll) {
-        this._autoScroll = false
-        this.setData({ atBottom: false })
+
+    // **默认永远跟底**（2026-10-05 用户：「以滑动底部作为默认行为……避免场景确实导致不跟滑」）。
+    //
+    // 旧写法在这里叠了三个各自为正的判据，互相打架：
+    //   1. deltaY < 0 → 立刻停跟（「提前量」）
+    //   2. 点完「回到最新」后 600ms 内不认这个提前量（回弹是假的）
+    //   3. 24px 的贴底容差
+    // 三者各有各的边界条件，一起逛就会「跟不上」——那就是用户报的。
+    //
+    // 现在只保留一条规则：**用户自己滑离底部才停**，判据只看位置。
+    // 自作自起的回弹帧（deltaY 为负）不能当作「用户滑起来了」，
+    // 所以 _programmaticUntil 这个时间窗只覆盖**我们自己触发**的滚动，
+    // 而不是「过了 600ms 就当作没人拖过」。
+    var atBottom = d.scrollTop + h >= d.scrollHeight - this._SCROLL_BOTTOM_SLOP
+    if (atBottom) {
+      this._programmaticUntil = 0
+      if (!this._autoScroll) {
+        this._autoScroll = true
+        this.setData({ atBottom: true })
       }
       return
     }
-    if (atBottom !== this._autoScroll) {
-      this._autoScroll = atBottom
-      this.setData({ atBottom: atBottom })
+    // 自作自滚的尾帧回弹：屏幕滚到底了但 deltaY 还是负的那一帧。
+    // 它不代表用户想回看，不能因此停跟。
+    if ((d.deltaY || 0) < 0 && Date.now() < (this._programmaticUntil || 0)) {
+      return
+    }
+    if (this._autoScroll) {
+      this._autoScroll = false
+      this.setData({ atBottom: false })
     }
   },
 
@@ -431,7 +448,7 @@ Page({
   onJumpLatest: function () {
     this._autoScroll = true
     // 落底回弹的尾帧会是负 delta：给一个短窗口让它别把刚接上的跟随又关掉
-    this._jumpAt = Date.now()
+    this._programmaticUntil = Date.now() + this._SCROLL_REBOUND_MS
     this.setData({ atBottom: true })
     this._scrollToBottom()
   },

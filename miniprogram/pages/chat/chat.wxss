@@ -761,19 +761,29 @@
    品牌色实心 + 白箭头 + shadow-2：不占一行、不挡正文，IM 类应用里
    「回到最新」的标准形状。文字不要了——右下角一个向下箭头本身就是指令，
    带字反而把一颗按钮撑成一条。 */
+/* 回到最新（2026-10-05 用户：换个位置、小一点、颜色不要这么明显）。
+ *
+ * 三处都是因为它在**正文上面**，而正文才是这一页要读的东西：
+ *   位置 贴到右边缘、压到输入区那一带。原来浮在消息区中段，
+ *        正好盖住用户正在看的那几行。
+ *   大小 72rpx -> 56rpx。它是一个「以防万一」的控件，不该比正文更抢眼。
+ *   颜色 品牌色实心圆 -> 中性面 + 细边 + 次级文字色。离线/未配对都不该报警，
+ *        这一颗同理：它没有紧急性，亮品牌色是在假装它紧急。
+ */
 .jump {
   position: absolute;
-  right: 28rpx;
-  bottom: 210rpx;
+  right: 12rpx;
+  bottom: 176rpx;
   z-index: 10;
-  width: 72rpx;
-  height: 72rpx;
+  width: 56rpx;
+  height: 56rpx;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--td-brand-color);
-  box-shadow: var(--td-shadow-2);
+  background: var(--td-bg-color-secondarycontainer);
+  border: 1rpx solid var(--td-border-level-1-color);
+  box-shadow: var(--td-shadow-1);
   /* 入场：从无到有 + 轻微放大。wx:if 挂上时播一遍，落底即拆（不播退场，
      退场动画会在「贴底」和「隐藏」之间留一帧闪烁）。 */
   animation: jump-in 180ms ease-out;
@@ -793,10 +803,10 @@
 /* 箭头：右边框 + 下边框转 45° = 一个指向下的勾。
    margin-top 是视觉补偿——旋转之后箭头的重心偏上，不补这 4rpx 会显得顶边贴边。 */
 .jump-arrow {
-  width: 16rpx;
-  height: 16rpx;
-  border-right: 4rpx solid #fff;
-  border-bottom: 4rpx solid #fff;
+  width: 14rpx;
+  height: 14rpx;
+  border-right: 3rpx solid var(--td-text-color-secondary);
+  border-bottom: 3rpx solid var(--td-text-color-secondary);
   transform: rotate(45deg);
   margin-top: -4rpx;
 }
