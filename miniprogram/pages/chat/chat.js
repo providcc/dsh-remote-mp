@@ -129,11 +129,19 @@ function firstLine(text) {
   return s.length > TOOL_PREVIEW_CHARS ? s.slice(0, TOOL_PREVIEW_CHARS) + '…' : s
 }
 
-/** 连接态 → 顶栏胶囊的语义色 */
+/**
+ * 连接态 → 顶栏那颗圆点的语义色。
+ *
+ * 2026-10-05 用户拍板："手机离线不要黄色，不要给用户提供焦虑"。
+ * 产品定位是**临时离开电脑时的手机替身**：离线不是故障而是这件东西的常态
+ * （合盖、睡觉、地铁），所以 error 也**不用红色**——红在这里说的是"你的东西坏了"，
+ * 而实际要传达的只是"现在没连上"。中性灰 + 一句人话就够。
+ * 全页没有 warning：真需要用户动手的状态（待审批/待回答）用品牌色。
+ */
 function connTheme(status) {
   if (status === 'online') return 'success'
   if (status === 'connecting' || status === 'pairing') return 'primary'
-  if (status === 'error') return 'danger'
+  if (status === 'error') return 'default'
   return 'default'
 }
 

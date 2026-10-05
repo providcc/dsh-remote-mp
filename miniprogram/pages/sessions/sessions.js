@@ -55,14 +55,30 @@ function sessionRank(a, b) {
  * 主机会拒绝归档会话的每一步，必须一眼可辨（旧版漏了这个）。
  */
 function badgeFor(state, running) {
-  if (state === 'awaiting-permission') return { text: '待审批', theme: 'warning' }
-  if (state === 'awaiting-answer') return { text: '待回答', theme: 'warning' }
+  // 待审批 / 待回答用品牌色而不是警示黄：它是"该你了"，不是"出错了"。
+  // 2026-10-05 用户："不要黄色，不要给用户提供焦虑"——这一代整页没有 warning。
+  if (state === 'awaiting-permission') return { text: '待审批', theme: 'primary' }
+  if (state === 'awaiting-answer') return { text: '待回答', theme: 'primary' }
   if (state === 'archived') return { text: '已归档', theme: 'default' }
   if (state === 'detached') return { text: '未加载', theme: 'default' }
   if (state === 'running' || running) return { text: '运行中', theme: 'primary' }
   return { text: '空闲', theme: 'default' }
 }
 
+/**
+ * 连接态 → 顶栏那颗胶囊。
+ *
+ * 2026-10-05 用户拍板："手机离线不要黄色，不要给用户提供焦虑"。
+ * 产品定位是**临时离开电脑时的手机替身**——离线不是故障，是这件东西的常态：
+ * 电脑合上盖、睡一觉、地铁里，都会离线，回来自己就接上了。所以：
+ *
+ * - `error`（配对失败 / 会话失效）原来是**红色**danger。红色在这件产品里的语义是
+ *   "你的东西坏了"，而这里要说的只是"现在没连上，点一下就能恢复"。降成中性灰，
+ *   文案也从"异常"改成"离线中"——说状态，不评判状态。
+ * - 全程没有 warning（黄/橙）：这一页原来只有"待审批 / 待回答"会用黄，但那两个
+ *   是**有人等你点一下**，用品牌色更贴切（它是"该你了"，不是"出错了"）。
+ *   留给真需要警示的场景，而这一代没有。
+ */
 function statusView(status) {
   switch (status) {
     case 'online':
@@ -71,7 +87,7 @@ function statusView(status) {
     case 'pairing':
       return { label: '连接中', theme: 'primary' }
     case 'error':
-      return { label: '异常', theme: 'danger' }
+      return { label: '离线中', theme: 'default' }
     default:
       return { label: '未连接', theme: 'default' }
   }
