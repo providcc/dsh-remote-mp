@@ -35,6 +35,18 @@
   border-bottom: 2rpx solid var(--td-component-border);
 }
 
+/* ── 缩图画布：藏在视口外 ────────────────────────────────────────────────
+   为什么不是 display:none：2d 画布隐藏之后 SelectorQuery 拿不到节点。
+   position:fixed + 推到屏幕外，既不占布局也不影响 pointer 事件。 */
+.drc-shrink {
+  position: fixed;
+  left: -4000rpx;
+  top: 0;
+  width: 1600px;
+  height: 1600px;
+  pointer-events: none;
+}
+
 /* ── 待办条（顶部，默认收起）────────────────────────────────────────────
    位置是用户定的：顶部。它是"这一轮在干什么"的索引，混进消息流会和步骤组
    互相踩；排队消息在底部输入区上方，两端分开谁都不挤。
@@ -1140,12 +1152,19 @@
   text-overflow: ellipsis;
 }
 
-.queue-thumb {
-  width: 56rpx;
-  height: 56rpx;
-  border-radius: 8rpx;
-  margin-right: 8rpx;
-  margin-top: 8rpx;
+/* 没收下的那几条：整行降到次要一档，原因另起一行说清（不能只是颜色变了）。 */
+.queue-item-failed .queue-text {
+  color: var(--td-text-color-placeholder);
+}
+
+.queue-failed {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 20rpx;
+  color: var(--td-error-color);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* 删除按钮：两根斜杠画一个 ×，不用字符 ×。字符 × 在真机上是一粒脏东西——
@@ -1173,7 +1192,11 @@
   transform: rotate(-45deg);
 }
 
-/* ── 图片附件（待发送）────────────────────────────────────────────── */
+/* ── 图片附件（待发送）──────────────────────────────────────────────
+   2026-10-05 用户："图片不用显示出来，在加号上提示一下有几个附件就行了，
+   目前内容比较多有点挤"。缩略图条整块删掉（.attach-item/.attach-thumb/.attach-del
+   三个选择器一起退场），只留一行字 + 一个"撤掉"。选了几张由加号右上角那颗
+   角标说——它就在用户点选的那颗按钮上，不用另占一行。 */
 .attach {
   flex: 0 0 auto;
   display: flex;
@@ -1182,35 +1205,41 @@
   background: var(--td-bg-color-container);
 }
 
-.attach-item {
-  position: relative;
-  margin-right: 16rpx;
-}
-
-.attach-thumb {
-  width: 120rpx;
-  height: 120rpx;
-  border-radius: 12rpx;
-  background: var(--td-bg-color-secondarycontainer);
-}
-
-.attach-del {
-  position: absolute;
-  top: -8rpx;
-  right: -8rpx;
-  width: 36rpx;
-  height: 36rpx;
-  line-height: 34rpx;
-  text-align: center;
-  border-radius: 50%;
-  background: #4b4b4b;
-  color: #ffffff;
-  font-size: 26rpx;
-}
-
 .attach-hint {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 22rpx;
   color: var(--td-text-color-placeholder);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.attach-clear {
+  flex: 0 0 auto;
+  padding: 6rpx 16rpx;
+  font-size: 22rpx;
+  color: var(--td-text-color-secondary);
+}
+
+/* 加号右上角的角标：选了几张图。
+   位置在按钮内部右上（不是外面浮一层）：这一页已经够挤了，角标要长在
+   用户刚刚点过的那颗按钮上，不新增任何一行。 */
+.plus-badge {
+  position: absolute;
+  right: -10rpx;
+  top: -10rpx;
+  min-width: 30rpx;
+  height: 30rpx;
+  padding: 0 6rpx;
+  box-sizing: border-box;
+  border-radius: 15rpx;
+  background: var(--td-brand-color);
+  color: #ffffff;
+  font-size: 20rpx;
+  line-height: 30rpx;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── 输入区左侧加号（附件入口）────────────────────────────────────── */
@@ -1240,18 +1269,12 @@
   transform: rotate(90deg);
 }
 
-/* ── 用户气泡里的附件缩略图 ───────────────────────────────────────── */
+/* ── 用户气泡里的附件计数行 ──────────────────────────────────────────
+   2026-10-05 用户："图片不用显示出来，在加号上提示一下有几个附件就行了"。
+   原来这里是 180rpx 的缩略图网格；现在只一行小字。白字压在品牌色气泡上，
+   所以用半透明白而不是再引一个次级色（深色/浅色两套都不用改）。 */
 .user-images {
-  display: flex;
-  flex-wrap: wrap;
-  margin-bottom: 12rpx;
-}
-
-.user-img {
-  width: 180rpx;
-  height: 180rpx;
-  border-radius: 12rpx;
-  margin-right: 12rpx;
-  margin-bottom: 12rpx;
-  background: var(--td-bg-color-secondarycontainer);
+  margin-bottom: 8rpx;
+  font-size: 22rpx;
+  color: var(--td-text-color-anti, #ffffff);
 }

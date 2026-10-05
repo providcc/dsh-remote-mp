@@ -61,6 +61,12 @@ function collect() {
     legacySocket:
       has(api, 'onSocketOpen') && has(api, 'onSocketMessage') && has(api, 'sendSocketMessage'),
     request: has(api, 'request'),
+    // 图片缩图那一链：三个能力缺一个就退回"压缩完直接读"（老 SDK / 工具某些模式）
+    canvas:
+      has(api, 'createSelectorQuery') &&
+      has(api, 'getImageInfo') &&
+      has(api, 'canvasToTempFilePath'),
+    compressImage: has(api, 'compressImage'),
     storage: has(api, 'getStorageSync') && has(api, 'setStorageSync'),
     scanCode: has(api, 'scanCode'),
   }
@@ -88,6 +94,8 @@ function summary() {
     'SOCKET=' + (p.connectSocket ? 'yes' : 'NO'),
     'LEGACY=' + (p.legacySocket ? 'yes' : 'no'),
     'REQUEST=' + (p.request ? 'yes' : 'no'),
+    'CANVAS=' + (p.canvas ? 'yes' : 'no'),
+    'COMPRESS=' + (p.compressImage ? 'yes' : 'no'),
     'STORAGE=' + (p.storage ? 'yes' : 'no'),
     'SCAN=' + (p.scanCode ? 'yes' : 'no'),
   ]

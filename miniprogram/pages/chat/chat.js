@@ -3,6 +3,7 @@
 var client = require('../../core/client.js')
 var theme = require('../../core/theme.js')
 var markdown = require('../../core/markdown.js')
+var env = require('../../core/env.js')
 
 /**
  * chat 页 —— 一条会话渲染成「文档流」，不是一串聊天气泡。
@@ -72,18 +73,23 @@ var IMAGE_QUALITY = 0.6
 /** 分段进度条最多几格（多了就把前 7 条画出来，最后一格表示还有更多）。 */
 var TODO_SEG_MAX = 8
 /**
- * 图片的字节预算（压缩**之后**的原始字节数，不含 base64 的 4/3 膨胀）。
+ * 图片压到多小：长边钉死在这个像素数。
  *
- * 为什么是这两个数：整条载荷是 JSON，图片只能 base64 进门；而中继那条连接有
- * 1MB 的硬帧上限（`DRC_MAX_MSG_BYTES`），超了不是发不出去，是整条帧被掐、
- * socket 1009 断开——用户看到的是莫名掉线，比一条清楚Toast 难查得多。
- * 600KB 总量 ≈ base64 800KB，加上其余字段与密文封装仍在 1MB 之内。
- *
- * ⚠️ Android 上 `compressImage` 的 quality 被系统忽略（见上面 IMAGE_QUALITY 的注释），
- * 所以这道闸在 Android 上更容易被触发——触发时就明说，别让用户以为选图坏了。
+ * 为什么是 1600："看清楚一张报错截图"到 1600 已经完全够（代码片段、栈帧都能读），
+ * 再大只是把帧撑爆。1600 长边 + quality 0.6 出来的 jpeg 通常 100～350KB，
+ * 一条消息带四张也还在中继的 1MB 硬帧上限之内。
  */
-var MAX_IMAGE_BYTES = 300 * 1024
-var MAX_IMAGE_TOTAL_BYTES = 600 * 1024
+var IMAGE_LONG_EDGE = 1600
+/**
+ * 图片的字节预算（压完之后）——两条闸：单张、一条消息合计。
+ *
+ * 为什么单张是 512KB：base64 把体积撑大 4/3，再算密文封装，**一条消息**里
+ * 图片原始字节超过约 540KB 就过不了中继的 1MB 硬帧上限（`DRC_MAX_MSG_BYTES`）。
+ * 合计闸 512KB 留了余量给 cmdId/sessionId 等字段。单张闸等于合计闸：
+ * 一张就顶格时它先说话，不至于被"合计"那条含糊过去。
+ */
+var MAX_IMAGE_BYTES = 512 * 1024
+var MAX_IMAGE_TOTAL_BYTES = 512 * 1024
 var MAX_TEXT_PER_BLOCK = 20000
 var DELTA_FLUSH_MS = 100
 var DELTA_FLUSH_CHARS = 4096
@@ -192,17 +198,22 @@ Page({
     /** 是否已贴底。false 时浮出「回到最新」 */
     atBottom: true,
     /**
-     * 排队中的消息（2026-10-04 加）。会话在跑时用户继续打的内容进这里，
-     * 空闲按序发出——AI 干活时人不会闲着，这是最自然的用法。
-     * 一项：`{key, text, images:[{name,path,width,height}]}`。
+     * 已经交给 dsh、还没被它消化的消息（2026-10-05 重做为**视图**）。
+     *
+     * 2026-10-05 用户拍板：排队要以 dsh 为准。`agent.followup()` 本来就把消息排进
+     * dsh 自己的 inbox，手机再维护一份队列等于两个队列：主机消化掉第一条之后，
+     * 手机那份既不知道也不跟着动，用户看到的就是"第一条被消费后我排的队全没了"。
+     * 所以：会话在跑也照样发；这一份只是跟着主机回执/回传改写的视图——
+     * 回执说"收下了"进来，宿主回传这条消息时出去。
+     * 一项：`{key, text, images, state:'queued'|'failed', message}`。
      */
-    queue: [],
-    /** 队列默认展开； collapsing 之后只留一行汇总（长队列不许把消息区顶掉）。 */
+    pending: [],
+    /** pending 默认展开；收起之后只留一行汇总（长队列不许把消息区顶掉）。 */
     queueOpen: true,
     /**
      * 待办清单（内核 `todo/write` → `ev.todo`，全量快照）。
      * 一项：`{content, status: 'pending' | 'in_progress' | 'completed'}`。
-     * 与 queue（底部、排队中的指令）分管上下两端，互不打架。
+     * 与 pending（底部、等 dsh 消化的指令）分管上下两端，互不打架。
      */
     todos: [],
     /** 分段进度条：每条待办一格，超过 8 条时前 7 格 + 一个"还有更多"。 */
@@ -216,6 +227,8 @@ Page({
     todoRunningText: '',
     /** 输入区上方待发送的图片附件（本地压缩后的临时文件）。 */
     attachments: [],
+    /** 加号角标上的数字（= attachments.length，wxml 里不做运算）。 */
+    attachCount: 0,
     /** 顶栏：连接状态。模型（`modelName`）跟在它后面同一行，运行态由步骤组的实时标签说 */
     barText: '',
     barTheme: 'default',
@@ -523,7 +536,7 @@ Page({
         this._commit(this._ensureThinkOpen(this.data.blocks))
       } else {
         this._stopThinkTick()
-        this._drainQueue()
+        this._pendingRetry()
       }
       this._renderBar()
       return
@@ -994,6 +1007,10 @@ Page({
   _onUserEcho: function (text) {
     var want = String(text || '').trim()
     if (!want) return
+    // 宿主回传 = dsh 开始消化这一条了：pending 里对应的那一条可以划掉。
+    // 先进先出（不按文本比）：带图的消息宿主回传的是加了图片说明的正文，
+    // 原文本对不上；而 dsh 是按入队顺序消化的，队列顺序本身就是判据。
+    this._pendingTake()
     var blocks = this.data.blocks
     for (var i = blocks.length - 1; i >= 0; i--) {
       var b = blocks[i]
@@ -1231,13 +1248,15 @@ Page({
       blocks = this._ensureThinkOpen(blocks)
     } else {
       this._stopThinkTick()
+      // 刚从在跑变成空闲：没收下的那几条这时候重发（主机此刻一定有空档）
+      this._pendingRetry()
     }
     this._renderBar()
     this._commit(blocks)
     // 刚闲下来：排队里的消息按序发（用户打了一句"继续"多半就是这个时刻）。
     // ⚠️ 必须放在这次 commit **之后**：_sendNow 自己会再 commit 一次（本地回显），
     // 而上面那个 blocks 是进水前的快照——先排水的话这一句会把回显整段盖掉。
-    if (!running) this._drainQueue()
+    if (!running) this._pendingRetry()
   },
 
   // ── 步骤组的动作 ──────────────────────────────────────────────────
@@ -1493,15 +1512,23 @@ Page({
     var images = this.data.attachments.slice()
     if (!text && !images.length) return
     if (!this.data.sessionId) return
-    this.setData({ inputText: '', attachments: [] })
-    if (this.data.running) {
-      this._enqueue(text, images)
-      return
-    }
+    this.setData({ inputText: '', attachments: [], attachCount: 0 })
+    // **不再本地排队**：会话在跑也照样发。dsh 的 agent 有 inbox——
+    // `agent.followup()` 就是"排一个跟进回合并唤醒驱动"，队列本来就在主机那一侧。
+    // 手机自己再维护一份队列 = 两个队列：主机消化掉第一条之后，手机那份
+    // 既不知道也不跟着动，用户看到的就是"第一条被消费后，我排的队全没了"
+    // （2026-10-05 用户报）。所以现在只发，然后等回执与回传。
     this._sendNow(text, images)
   },
 
-  /** 空闲：本地回显 + 立刻发。 */
+  /**
+   * 本地回显 + 发出去，然后等主机回执。
+   *
+   * 回执只有两种结局，两种都要落到 `pending` 上让人看得见：
+   *   - 收下了 → 进 `pending`（state 'queued'）：这是 dsh inbox 里还没开始跑的那条；
+   *   - 没收下 → 也进 `pending`（state 'failed'）+ 一句原因，等空闲时重试。
+   *     原来这条路是静默的：消息看着发出去了，其实哪儿都没到。
+   */
   _sendNow: function (text, images) {
     // 轮次号交给 `_commit` 重排（它知道历史那一侧已经占了多少轮），这里只给时间
     var blocks = this._append(this.data.blocks, {
@@ -1522,17 +1549,76 @@ Page({
     this._autoScroll = true
     this.setData({ atBottom: true })
     this._commit(blocks)
-    this.client.sendPrompt(this.data.sessionId, text, images)
+    this._dispatch(text, images)
   },
 
-  /** 在跑：进队列。”先进先出+可删+可收起“三条都在这：队列是用户看得见的承诺，不是黑洞。 */
-  _enqueue: function (text, images) {
-    var item = { key: 'q' + this._counter++, text: text, images: images }
-    this.setData({
-      queue: this.data.queue.concat([item]),
-      queueOpen: true,
-    })
+  /**
+   * 发给主机 + 等回执 + 记账。**不碰回显块**：重发一条没收下的消息时
+   * 会话里那一行已经在原地了，再画一遍就是两条。
+   */
+  _dispatch: function (text, images) {
+    var self = this
+    this.client
+      .sendPromptReceipt(this.data.sessionId, text, images)
+      .then(function (r) {
+        if (r.ok) {
+          self._pendingAdd(text, images, 'queued')
+          return
+        }
+        self._pendingAdd(text, images, 'failed', r.message)
+        wx.showToast({ title: String(r.message || '这条没发出去').slice(0, 40), icon: 'none' })
+      })
+      .catch(function () {
+        self._pendingAdd(text, images, 'failed', '这条没发出去')
+      })
+  },
+
+  /**
+   * 加一条"已经交给 dsh、还没被它消化"的消息。
+   *
+   * 这是**视图**，不是第二个队列：条目在主机回执说"收下了"时进来，在宿主回传
+   * 这条消息（`ev.message_delta` role=user）时出去——也就是 dsh 真的开始跑它的
+   * 那一刻。中途换页/断线重连都不丢，因为真相在主机那边，这边只是跟着改写。
+   */
+  _pendingAdd: function (text, images, state, message) {
+    var item = {
+      key: 'q' + this._counter++,
+      text: text,
+      images: images,
+      state: state,
+      message: message || '',
+    }
+    this.setData({ pending: this.data.pending.concat([item]) })
     if (wx.vibrateShort) wx.vibrateShort({ type: 'light' })
+  },
+
+  /** 宿主回传了某条用户消息：dsh 已经开始消化它，从 pending 里划掉。先进先出。 */
+  _pendingTake: function () {
+    if (!this.data.pending.length) return
+    this.setData({ pending: this.data.pending.slice(1) })
+  },
+
+  /** 会话空下来：把没收下的那几条重发一遍（主机那边从没收到过它们）。 */
+  _pendingRetry: function () {
+    var self = this
+    var failed = this.data.pending.filter(function (p) {
+      return p.state === 'failed'
+    })
+    if (!failed.length) return
+    this.setData({
+      pending: this.data.pending.filter(function (p) {
+        return p.state !== 'failed'
+      }),
+    })
+    for (var i = 0; i < failed.length; i++) {
+      // 逐条发：一次发一摞回去，主机那边又变成一堆同时到的 inbox 条目
+      ;(function (item) {
+        setTimeout(function () {
+          // 只重发，不再画一遍回显（那一行已经在会话里了）
+          self._dispatch(item.text, item.images)
+        }, i * 300)
+      })(failed[i])
+    }
   },
 
   onToggleQueue: function () {
@@ -1565,16 +1651,25 @@ Page({
   },
 
   /**
-   * 逐张压缩 → 读成 base64。
+   * 逐张：压缩 → 缩到定长边 → 读成 base64。
    *
-   * 2026-10-05 用户报"选图片都是提示这张图读不出来"。根因一句话：`wx.chooseMedia`
-   * 回来的是 **`tempFilePath`**，而这里读的是 `f.path`——那个字段从来不存在，
-   * 于是 `src` 是 undefined，compressImage 失败、退回的也还是 undefined，readFile
-   * 再失败，每张图都走"读不出来"。e2e 的假 wx 当时也照着错代码写成 `path`，
- * 所以 32 项单测一直是绿的（假实现与真 API 分叉，最难发现的一类）。
-   * 现在的假 wx 按真 API 给 `tempFilePath`，并且在路径为空时**照真的那样失败**。
+   * 三步而不是一步，是因为**压缩在两个平台上不是同一件事**：
+   *   - iOS 上 `wx.compressImage` 的 quality 真的管事；
+   *   - Android 上它被系统忽略（只按 sizeType 走一遍），相册给的 `compressed`
+   *     仍是个一两 MB 的大文件。
+   * 所以第二步用画布把长边钉死在 {@link IMAGE_LONG_EDGE}：这一步两个平台都算数，
+   * 出来的 jpeg 通常 100～350KB——**这正是用户要的"压缩发过去"**（2026-10-05
+   * 用户："为什么要识别，压缩发过去就行了"）。
    *
-   * 压缩失败不挡路：原图也能发（体积的事有下面的预算兜着）。
+   * 每一步失败都不挡路，一路退到原文件：没有画布就用 compressImage 的结果，
+   * 没有 compressImage 就用相册给的文件。最坏情况只是体积大一点，由第三步的
+   * 预算明说——但不该"加不进来"。
+   *
+   * 2026-10-05 用户两次报"图片无法添加"。第一次根因是字段名：`f.path` 不存在，
+   * 读的是个 undefined（见下面 readAsBase64 的注释）。第二次根因是 1.1.6 我加的
+   * **单张 300KB 闸**——手机照片压完普遍 300～800KB，于是每张都被它挡在门外。
+   * 闸要留（中继 1MB 硬帧上限，见 {@link MAX_IMAGE_TOTAL_BYTES} 的注释），
+   * 但得先把图真的压小，而不是拿闸去挡用户。
    */
   _compressPicked: function (files) {
     var self = this
@@ -1582,7 +1677,8 @@ Page({
     var i = 0
     var next = function () {
       if (i >= files.length) {
-        self.setData({ attachments: self.data.attachments.concat(out).slice(0, MAX_IMAGES) })
+        var kept = self.data.attachments.concat(out).slice(0, MAX_IMAGES)
+        self.setData({ attachments: kept, attachCount: kept.length })
         return
       }
       var f = files[i++]
@@ -1591,90 +1687,202 @@ Page({
         src: picked,
         quality: IMAGE_QUALITY,
         success: function (c) {
-          self._readAsBase64(c.tempFilePath, f, out, next)
+          self._shrinkPicked(c.tempFilePath, f, out, next)
         },
         fail: function () {
-          self._readAsBase64(picked, f, out, next)
+          self._shrinkPicked(picked, f, out, next)
         },
       })
     }
     next()
   },
 
-  _readAsBase64: function (path, meta, out, done, self) {
-    if (!self) self = this
-    wx.getFileSystemManager().readFile({
-      filePath: path,
-      encoding: 'base64',
-      success: function (r) {
-        var base64 = String(r.data || '')
-        // 体积预算：整条载荷是 JSON，图片只能 base64 进门（协议里的
-        // imageAttachment 就是这么定的，主机那头没有这个文件）。而中继那条
-        // 连接有 1MB 的硬帧上限——超了不是"发不出去"，是**整条帧被掐、
-        // socket 1009 断开**，用户看到的是莫名掉线。所以在进 attachments
-        // 之前就按字节数把关，超了明说，不偷偷带上车。
-        var bytes = Math.floor((base64.length * 3) / 4)
-        var already = 0
-        for (var k = 0; k < self.data.attachments.length; k++) {
-          already += Math.floor((self.data.attachments[k].data.length * 3) / 4)
-        }
-        for (var m = 0; m < out.length; m++) {
-          already += Math.floor((out[m].data.length * 3) / 4)
-        }
-        if (bytes > MAX_IMAGE_BYTES || already + bytes > MAX_IMAGE_TOTAL_BYTES) {
-          var kb = Math.round(bytes / 1024)
-          var budget = Math.round(MAX_IMAGE_TOTAL_BYTES / 1024)
-          wx.showToast({ title: '这张图压完还有 ' + kb + 'KB 超过一条消息 ' + budget + 'KB 的预算', icon: 'none' })
-          done()
+  /** 页面上那块藏起来的 2d 画布（懒建 + 缓存）。没有画布能力回 null。 */
+  _shrinkCanvas: function () {
+    if (this._canvasNode !== undefined) return this._canvasNode || null
+    if (!env.probe().canvas) {
+      this._canvasNode = null
+      return null
+    }
+    var node = null
+    wx.createSelectorQuery()
+      .select('#drc-shrink')
+      .fields({ node: true, size: true })
+      .exec(function (res) {
+        node = res && res[0] ? res[0].node : null
+      })
+    this._canvasNode = node
+    return node
+  },
+
+  /**
+   * 把长边钉死。本来就小的图原样放过——缩一张 800px 的截图只会更糊。
+   *
+   * 为什么不靠 compressImage 反复降 quality：Android 上 quality 被忽略，
+   * 那条路在 Android 上一格都不降。
+   */
+  _shrinkPicked: function (path, meta, out, done) {
+    var self = this
+    var canvas = this._shrinkCanvas()
+    if (!canvas) {
+      this._readAsBase64(path, meta, out, done, this)
+      return
+    }
+    wx.getImageInfo({
+      src: path,
+      success: function (info) {
+        var long = Math.max(info.width, info.height)
+        if (!long || long <= IMAGE_LONG_EDGE) {
+          self._readAsBase64(path, meta, out, done, self)
           return
         }
-        out.push({
-          name: 'img-' + Date.now() + '-' + out.length + '.jpg',
-          // path 只在本机显示用（回显缩略图）；**不上线**（ sendPrompt 只映射 wire 要的字段）
-          path: path,
-          data: base64,
-          width: meta.width,
-          height: meta.height,
-        })
-        done()
+        var scale = IMAGE_LONG_EDGE / long
+        var w = Math.max(1, Math.round(info.width * scale))
+        var h = Math.max(1, Math.round(info.height * scale))
+        var ctx = canvas.getContext('2d')
+        var img = canvas.createImage()
+        img.onload = function () {
+          canvas.width = w
+          canvas.height = h
+          ctx.drawImage(img, 0, 0, w, h)
+          wx.canvasToTempFilePath({
+            canvas: canvas,
+            fileType: 'jpg',
+            quality: IMAGE_QUALITY,
+            success: function (r) {
+              self._readAsBase64(r.tempFilePath, info, out, done, self)
+            },
+            fail: function () {
+              self._readAsBase64(path, meta, out, done, self)
+            },
+          })
+        }
+        img.onerror = function () {
+          self._readAsBase64(path, meta, out, done, self)
+        }
+        img.src = path
       },
       fail: function () {
-        wx.showToast({ title: '这张图读不出来', icon: 'none' })
-        done()
+        self._readAsBase64(path, meta, out, done, self)
       },
     })
   },
 
-  onRemoveAttachment: function (e) {
-    var path = e.currentTarget.dataset.path
-    this.setData({
-      attachments: this.data.attachments.filter(function (a) {
-        return a.path !== path
-      }),
+  /**
+   * 读成 base64，然后按字节数过闸。
+   *
+   * 2026-10-05 用户报"选图片都是提示这张图读不出来"，根因是 `wx.chooseMedia` 回来的是
+   * **`tempFilePath`** 而代码读 `f.path`——那个字段从来不存在。
+   * 另有一条真机特有的坑：chooseMedia 有时给的是 `http://tmp/xxx`（本地临时服务
+   * 地址）而不是 `wxfile://`，readFile 不认它。所以读失败时**再走一次 downloadFile**
+   * 把它落到真正的本地文件，两条路都读不到才认输。
+   */
+  _readAsBase64: function (path, meta, out, done, self) {
+    if (!self) self = this
+    var giveUp = function () {
+      wx.showToast({ title: '这张图读不出来', icon: 'none' })
+      done()
+    }
+    var triedDownload = false
+    var readIt = function (filePath) {
+      wx.getFileSystemManager().readFile({
+        filePath: filePath,
+        encoding: 'base64',
+        success: function (r) {
+          var base64 = String(r.data || '')
+          self._acceptImage(path, filePath, meta, base64, out, done)
+        },
+        fail: function () {
+          // `http://tmp/...` 那条路：本地临时服务地址，readFile 不认它，
+          // 但 downloadFile 认——先落到 wxfile:// 再读一次。
+          if (!triedDownload && /^https?:\/\//.test(filePath)) {
+            triedDownload = true
+            wx.downloadFile({
+              url: filePath,
+              success: function (d) {
+                if (d.statusCode === 200 && d.tempFilePath) readIt(d.tempFilePath)
+                else giveUp()
+              },
+              fail: giveUp,
+            })
+            return
+          }
+          giveUp()
+        },
+      })
+    }
+    readIt(path)
+  },
+
+  /**
+   * 过体积闸 + 进 attachments。拆出来是要能单测（判据直接喂 base64 长度）。
+   *
+   * 为什么是这两条闸：整条载荷是 JSON，图片只能 base64 进门（协议里的
+   * imageAttachment 就是这么定的，主机那头没有手机上这个文件）；而中继那条
+   * 连接有 1MB 的硬帧上限（`DRC_MAX_MSG_BYTES`）——超了不是"发不出去"，
+   * 是**整条帧被掐、socket 1009 断开**，用户看到的是莫名掉线。而 base64
+   * 会把体积撑大 4/3，再算上密文封装，一条消息里图片原始字节超过约 540KB
+   * 就过不去了。所以闸是：**单张不超过 {@link MAX_IMAGE_BYTES}，一条消息
+   * 合计不超过 {@link MAX_IMAGE_TOTAL_BYTES}**，超了明说该减哪一张。
+   *
+   * 2026-10-05：单张闸原本是 300KB，把每张手机照片都挡在门外（用户连报两次
+   * "图片无法添加"）。画布缩图上线之后单张 512KB 已经够宽——缩到 1600 长边的
+   * jpeg 通常 100～350KB——这道闸从此只是兜底，不再是墙。
+   */
+  _acceptImage: function (shownPath, realPath, meta, base64, out, done) {
+    var self = this
+    var bytes = Math.floor((base64.length * 3) / 4)
+    var already = 0
+    for (var k = 0; k < self.data.attachments.length; k++) {
+      already += Math.floor((self.data.attachments[k].data.length * 3) / 4)
+    }
+    for (var m = 0; m < out.length; m++) {
+      already += Math.floor((out[m].data.length * 3) / 4)
+    }
+    if (bytes > MAX_IMAGE_BYTES) {
+      wx.showToast({
+        title: '这张图压完还有 ' + Math.round(bytes / 1024) + 'KB 太大 换一张或截一下',
+        icon: 'none',
+      })
+      done()
+      return
+    }
+    if (already + bytes > MAX_IMAGE_TOTAL_BYTES) {
+      wx.showToast({
+        title:
+          '一条消息最多 ' +
+          Math.round(MAX_IMAGE_TOTAL_BYTES / 1024) +
+          'KB 图片 已经带了 ' +
+          Math.round(already / 1024) +
+          'KB',
+        icon: 'none',
+      })
+      done()
+      return
+    }
+    out.push({
+      name: 'img-' + Date.now() + '-' + out.length + '.jpg',
+      // path 只在本机显示用（回显缩略图）；**不上线**（sendPrompt 只映射 wire 要的字段）
+      path: shownPath,
+      data: base64,
+      width: meta.width,
+      height: meta.height,
     })
+    done()
+  },
+
+  /** 撤掉全部已选图片（缩略图条删了，逐个撤没有落点，整批撤就好）。 */
+  onClearAttachments: function () {
+    if (!this.data.attachments.length) return
+    this.setData({ attachments: [], attachCount: 0 })
+    if (wx.vibrateShort) wx.vibrateShort({ type: 'light' })
   },
 
   /** 从队列里撤回一条（还没发出去，撤就是真撤）。 */
+  /** 撤一条还没被 dsh 消化的（ failed 的那种：主机从没收到，撤就是真撤）。 */
   onDequeue: function (e) {
     var key = e.currentTarget.dataset.key
-    this.setData({ queue: this.data.queue.filter(function (q) { return q.key !== key }) })
-  },
-
-  /** 会话从在跑变成空闲：把队列按序发出去。 */
-  _drainQueue: function () {
-    if (this._draining) return
-    var queue = this.data.queue.slice()
-    if (!queue.length) return
-    var next = queue.shift()
-    this.setData({ queue: queue })
-    this._draining = true
-    var self = this
-    this._sendNow(next.text, next.images)
-    // 两条之间留一拍：内核那边一条回合刚结束，立刻塞下一条容易吃满排队。
-    setTimeout(function () {
-      self._draining = false
-      self._drainQueue()
-    }, 800)
+    this.setData({ pending: this.data.pending.filter(function (q) { return q.key !== key }) })
   },
 
   onInterrupt: function () {

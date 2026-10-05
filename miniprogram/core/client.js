@@ -409,14 +409,69 @@ class DrcClient {
    * **只映射协议要的字段**——本地路径（path）之类都不上线。
    * 一条最多 4 张（协议层上限）；调用方（chat 页）已经按这个数收过一轮。
    */
-  sendPrompt(sessionId, text, images) {
-    var cmd = { t: 'cmd.send_prompt', cmdId: this.newCmdId(), sessionId: sessionId, text: text }
+  sendPrompt(sessionId, text, images, cmdId) {
+    var cmd = {
+      t: 'cmd.send_prompt',
+      // 调用方可以自带 cmdId（要等回执时）；不带就自己分配。
+      cmdId: cmdId || this.newCmdId(),
+      sessionId: sessionId,
+      text: text,
+    }
     if (images && images.length) {
       cmd.images = images.slice(0, 4).map(function (a) {
         return { name: a.name, mediaType: 'image/jpeg', data: a.data, width: a.width, height: a.height }
       })
     }
     return this.sendCmd(cmd)
+  }
+
+  /**
+   * 发一条指令，并等主机的 `ev.result` 回执。
+   *
+   * 为什么要有这一个（而不是原来那个发完就不管的 `sendPrompt`）：**排队要以 dsh 为准**
+   * （2026-10-05 用户拍板）。指令发出去只是"到主机了"，主机收不收、收在哪儿，
+   * 只有回执说得清——`agent.followup()` 会把它排进 dsh 自己的 inbox，而
+   * "没有活的 agent"这一类失败以前在手机上是**静默的**：消息看着发出去了，
+   * 其实哪儿都没到。
+   *
+   * 与 `newSession` 同一套回执机制（按 cmdId 登记 waiter，回帧或超时只结算一次，
+   * 断线时由 `_settleWaiters` 就地结算）。
+   *
+   * @returns Promise<{ok: boolean, message?: string}>。`ok:false` 一定带可读原因。
+   */
+  sendPromptReceipt(sessionId, text, images) {
+    var self = this
+    if (this.status !== 'online') {
+      return Promise.resolve({
+        ok: false,
+        message:
+          this.status === 'connecting'
+            ? '还没连上主机，正在恢复连接，请稍后重试'
+            : '还没有连上主机，请先完成配对',
+      })
+    }
+    if (!this.isPaired() || !this.sock) {
+      return Promise.resolve({ ok: false, message: '还没有连上主机' })
+    }
+    var cmdId = this.newCmdId()
+    return new Promise(function (resolve) {
+      var timer = null
+      var done = function (payload) {
+        if (!self._cmdWaiters[cmdId]) return
+        delete self._cmdWaiters[cmdId]
+        if (timer) clearTimeout(timer)
+        if (payload && payload.t === 'ev.result') {
+          // 主机只回 ok/message：没有"排到第几位"这种字段（wire 还没有），
+          // 所以回执只能回答"收下了 / 没收下"。
+          resolve({ ok: payload.ok !== false, message: payload.message || '' })
+          return
+        }
+        resolve({ ok: false, message: '主机没有回应这条指令' })
+      }
+      timer = setTimeout(done, COMMAND_TIMEOUT_MS)
+      self._cmdWaiters[cmdId] = done
+      if (!self.sendPrompt(sessionId, text, images, cmdId)) done(null)
+    })
   }
 
   interrupt(sessionId) {

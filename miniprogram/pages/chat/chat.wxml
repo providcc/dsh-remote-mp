@@ -146,17 +146,10 @@
                这样 .blk 不用改成 flex，其它块的布局一点不受影响。 -->
           <view wx:elif="{{item.kind === 'user'}}" class="user-row">
             <view class="user">
-              <!-- 附件缩略图：本机临时文件， best-effort 显示（被微信清了就只剩占位） -->
-              <block wx:if="{{item.images && item.images.length}}">
-                <view class="user-images">
-                  <image
-                    class="user-img"
-                    wx:for="{{item.images}}"
-                    wx:key="path"
-                    src="{{item.path}}"
-                    mode="aspectFill" />
-                </view>
-              </block>
+              <!-- 图片**不画出来**（2026-10-05 用户："图片不用显示出来，在加号上提示一下
+                   有几个附件就行了"）。带了几张用一行小字说，点开气泡也看不见图——
+                   这一代起图片只是随消息发出的附件，不是要盯着看的东西。 -->
+              <view wx:if="{{item.images && item.images.length}}" class="user-images">图片 {{item.images.length}} 张</view>
               <view wx:if="{{item.text}}" class="user-text">{{item.text}}</view>
             </view>
           </view>
@@ -423,25 +416,40 @@
        右侧都是"文字 + 三角"，条目都是浮在灰带上的**卡片**；序号那颗品牌色圆点
        删了（它和右侧“自己发的”实心气泡撞色，而这只是次序不是消息），
        删除按钮从字符 × 改成两根斜杠画的 ×（字符 × 在真机上像一粒脏东西）。 -->
-  <view wx:if="{{queue.length}}" class="queue">
+  <!-- 缩图用的画布：藏在视口外（不是 display:none——2d 画布隐藏了拿不到节点）。
+       存在理由见 chat.js 的 _shrinkPicked：Android 上 compressImage 的 quality
+       被系统忽略，只有画布这一步两个平台都算数。没有这块画布时图片照样能发，
+       只是体积大一点。 -->
+  <canvas type="2d" id="drc-shrink" class="drc-shrink"></canvas>
+
+  <!-- 等 dsh 消化的消息：贴在输入区上方。默认展开；长队列收成一行汇总——
+       不许把消息区顶掉（用户报过的要求：可收起、超长截断）。
+       2026-10-05 三件事一起改：
+       1) 用户拍板"排队要以 dsh 为准，手机只是查询或添加"：这里不再是手机自己的
+          队列，而是**视图**——消息发出去就进 dsh 的 inbox（agent.followup 本来就
+          是那么排的），这一份跟着主机回执/回传改写。标题因此叫"等主机消化"。
+       2) 条目不再给"删除"：删不掉主机 inbox 里的东西，给一个假按钮比不给更糟。
+          只有没收下的那几条能给撤（主机从没收到过它们）。
+       3) 用户："图片不用显示出来，加号上提示一下有几个附件就行了，内容太多有点挤"：
+          缩略图全删，图片只用"N 张"两个字说。 -->
+  <view wx:if="{{pending.length}}" class="queue">
     <view class="queue-head" hover-class="pressed" hover-stay-time="60" bindtap="onToggleQueue">
-      <text class="queue-title">排队中 {{queue.length}} 条</text>
+      <text class="queue-title">等主机消化 {{pending.length}} 条</text>
       <view class="queue-toggle">
         <text class="queue-toggle-text">{{queueOpen ? '收起' : '展开'}}</text>
         <view class="caret {{queueOpen ? 'caret-up' : ''}}"></view>
       </view>
     </view>
     <block wx:if="{{queueOpen}}">
-      <view class="queue-item" wx:for="{{queue}}" wx:key="key">
+      <view class="queue-item {{item.state === 'failed' ? 'queue-item-failed' : ''}}" wx:for="{{pending}}" wx:key="key">
         <view class="queue-index">{{index + 1}}</view>
         <view class="queue-body">
-          <!-- 超长文本截断靠 wxss 的 ellipsis；一条只有图时文字位给一句人话 -->
+          <!-- 超长文本截断靠 wxss 的 ellipsis；一条只有图时文字位给一句人话。
+               图片不画缩略图（用户：内容太多有点挤），只说几张。 -->
           <view class="queue-text">{{item.text || ('图片 ' + item.images.length + ' 张')}}</view>
-          <block wx:if="{{item.images.length}}">
-            <image class="queue-thumb" wx:for="{{item.images}}" wx:for-item="img" wx:key="path" src="{{img.path}}" mode="aspectFill" />
-          </block>
+          <text wx:if="{{item.state === 'failed'}}" class="queue-failed">{{item.message || '没发出去，空闲时重试'}}</text>
         </view>
-        <view class="queue-del" hover-class="pressed" catchtap="onDequeue" data-key="{{item.key}}">
+        <view wx:if="{{item.state === 'failed'}}" class="queue-del" hover-class="pressed" catchtap="onDequeue" data-key="{{item.key}}">
           <view class="queue-del-bar"></view>
           <view class="queue-del-bar queue-del-bar-b"></view>
         </view>
@@ -449,13 +457,12 @@
     </block>
   </view>
 
-  <!-- 待发送的图片附件：缩略图条 + 逐个移除。选中即在本机，不发也能撤。 -->
-  <view wx:if="{{attachments.length}}" class="attach">
-    <view class="attach-item" wx:for="{{attachments}}" wx:key="path">
-      <image class="attach-thumb" src="{{item.path}}" mode="aspectFill" />
-      <view class="attach-del" hover-class="pressed" catchtap="onRemoveAttachment" data-path="{{item.path}}">×</view>
-    </view>
-    <view class="attach-hint">随下一条消息发出</view>
+  <!-- 待发送的图片附件：**不再画缩略图**（2026-10-05 用户："图片不用显示出来，
+       在加号上提示一下有几个附件就行了，目前内容比较多有点挤"）。
+       选了几张由加号右上角的角标说；点一下角标可以全部撤掉。 -->
+  <view wx:if="{{attachCount && attachCount > 0}}" class="attach">
+    <view class="attach-hint">已选 {{attachCount}} 张 随下一条消息发出</view>
+    <view class="attach-clear" hover-class="pressed" catchtap="onClearAttachments">撤掉</view>
   </view>
 
   <!-- 输入区：左侧加号（附件入口）+ 胶囊输入框 + 右侧「发送」文字按钮。
@@ -466,6 +473,8 @@
     <view class="composer-plus" hover-class="pressed" hover-stay-time="60" bindtap="onAttach">
       <view class="plus-bar"></view>
       <view class="plus-bar plus-bar-v"></view>
+      <!-- 选了几张图：角标说，不占地方（用户："在加号上提示一下有几个附件"） -->
+      <view wx:if="{{attachCount > 0}}" class="plus-badge">{{attachCount}}</view>
     </view>
     <view class="composer-pill">
       <input
