@@ -365,28 +365,24 @@
   margin-left: 22rpx;
 }
 
-.sess-title-row {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
 
+/* 标题独占一行（chip 挪下去了，见 wxml 里的说明）。
+   不再需要 flex:1/min-width:0——那两个是当年为了和 chip 挤一行、
+   让标题"可压缩"才加的；现在标题是块级，宽度天然是父容器全宽。 */
 .sess-title {
-  flex: 1 1 auto;
-  min-width: 0;
   font-size: 30rpx;
   line-height: 42rpx;
 }
 
-/* 工作区 tag（2026-10-04）：短名用品牌浅底 chip，和右侧的状态徽标
-   错开颜色——右边那颗已经被"运行中/待审批/空闲"占了语义，
-   这边再同色就会读成同一类东西。
+/* 工作区 tag（2026-10-04）→ 2026-10-05 用户要求挪成单独一行。
+   inline-block 是关键：view 默认 display:block，块级元素的 background
+   会铺满整行，chip 就变成一条满宽的色带而不是一个小方块。
    ⚠️ 字色用 brand-color-**10** 而不是 text-color-brand：深色表里后者是
    brand-8（#4582e6），压在 brand-1 的深底上只有 3.56:1，对比度体检不过。
    brand-10 是两个 theme 各自的极值端（浅底最深 / 深底最亮），两边都过。 */
 .sess-tag {
-  flex: 0 0 auto;
-  margin-left: 12rpx;
+  display: inline-block;
+  margin-top: 8rpx;
   padding: 2rpx 14rpx;
   border-radius: 8rpx;
   font-size: 20rpx;
@@ -397,7 +393,7 @@
 
 /* 完整目录：有 tag 短名之后它退成补充信息，再小一号 */
 .sess-sub {
-  margin-top: 6rpx;
+  margin-top: 8rpx;
   font-size: 20rpx;
   color: var(--td-text-color-placeholder, #a0a6b0);
 }

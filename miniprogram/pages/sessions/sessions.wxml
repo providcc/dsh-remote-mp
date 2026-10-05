@@ -155,14 +155,15 @@
           <view class="sess-bar {{item.badgeTheme}}"></view>
 
           <view class="sess-main">
-            <!-- 工作区 tag 与标题同一行："属于哪间屋子"现在是一级信息
-                 （列表按工作区排序，见 sessions.js 的 sessionRank）。
-                 标题过长时 chip 不动、标题先省略。 -->
-            <view class="sess-title-row">
-              <view class="sess-title ellipsis">{{item.title}}</view>
-              <view wx:if="{{item.workspaceTag}}" class="sess-tag">{{item.workspaceTag}}</view>
-            </view>
-            <!-- 完整目录弱化在下面：tag 给短名，这里只是补充 -->
+            <!-- 标题独占一行（2026-10-05 用户：项目标签要新增一行，不要放在右边）。
+                 以前 chip 挤在标题右边，标题被 chip 和右侧徽标夹在中间，
+                 长标题只剩一两个字的可见宽度——项目名反而读不出来。
+                 现在标题拿满宽度，chip 自己一行。 -->
+            <view class="sess-title ellipsis">{{item.title}}</view>
+            <!-- chip 单独一行，贴着标题下面："属于哪间屋子"是一级信息，
+                 但横向空间让给标题（列表按工作区排序，见 sessions.js 的 sessionRank） -->
+            <view wx:if="{{item.workspaceTag}}" class="sess-tag">{{item.workspaceTag}}</view>
+            <!-- 完整目录弱化在最下面：tag 给短名，这里只是补充 -->
             <view class="sess-sub ellipsis">{{item.workspace || item.id}}</view>
           </view>
 
