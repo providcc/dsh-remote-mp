@@ -431,11 +431,15 @@
   <!-- 等 dsh 消化的消息：贴在输入区上方。默认展开；长队列收成一行汇总——
        不许把消息区顶掉（用户报过的要求：可收起、超长截断）。
        2026-10-05 三件事一起改：
-       1) 用户拍板"排队要以 dsh 为准，手机只是查询或添加"：这里不再是手机自己的
-          队列，而是**视图**——消息发出去就进 dsh 的 inbox（agent.followup 本来就
-          是那么排的），这一份跟着主机回执/回传改写。标题因此叫"等主机消化"。
-       2) 条目不再给"删除"：删不掉主机 inbox 里的东西，给一个假按钮比不给更糟。
-          只有没收下的那几条能给撤（主机从没收到过它们）。
+           队列，而是**视图**——消息先进 dsh 自己的排队表（PromptQueue），
+           内核确认在跑才标成 sent；这一份跟着主机推来的 ev.queue 快照整体替换。
+           2026-10-05 傍晚重做后，主机自己起的回合也会出现在这里。
+        2) **2026-10-05 傍晚重做**：三种状态都能取消。
+           held 问主机拿掉（真消失）；sent 问主机**中断这一轮**；
+           failed 本机就删（主机从没收过它）。
+           这里原先写的是「条目不再给删除，删不掉 inbox 里的东西」——
+           那句话现在只对一半：host 确实删不掉 agent inbox，
+           但它有 interrupt，所以 sent 那条给的是中断而不是删除。
        3) 用户："图片不用显示出来，加号上提示一下有几个附件就行了，内容太多有点挤"：
           缩略图全删，图片只用"N 张"两个字说。 -->
   <view wx:if="{{pending.length}}" class="queue">
@@ -455,9 +459,16 @@
           <view class="queue-text">{{item.text || ('附件 ' + (item.images + item.files) + ' 项')}}</view>
           <text wx:if="{{item.state === 'failed'}}" class="queue-failed">{{item.message || '没发出去，空闲时重试'}}</text>
         </view>
-        <!-- 删除：只有 host 还扣着的（held）和本就没发出去的（failed）才给。
-             sent 的不给——那不是没做出来，是做了也删不掉，给个死按钮更糟。 -->
-        <view wx:if="{{item.state !== 'sent'}}" class="queue-del" hover-class="pressed" catchtap="onDropQueued" data-key="{{item.key}}">
+        <!-- 删除：三种状态都给按钮（2026-10-05 用户重做：mp 端要能取消）。
+             held 问主机拿掉，sent 问主机中断，failed 本机就删。
+             以前 sent 不给按钮，用户看到的就是无法取消；
+             而按钮背后各有各的做法，不是一个死按钮。 -->
+          <!-- 在跑标记（2026-10-05 用户重做：状态不许撒谎，也别让人看不出来）。
+      held 不给标签——整条排队条已经叫「等主机消化」了，再说一遍是噪音。
+      sent 必须给：它是真在跑的那一条，点了删除是「中断」不是「拿掉」，
+      用户得事先知道这一条跟别人不一样。 -->
+      <text wx:if="{{item.state === 'sent'}}" class="queue-state">在跑</text>
+      <view class="queue-del" hover-class="pressed" catchtap="onDropQueued" data-key="{{item.key}}">
           <view class="queue-del-bar"></view>
           <view class="queue-del-bar queue-del-bar-b"></view>
         </view>

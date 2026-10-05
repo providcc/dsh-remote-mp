@@ -1650,42 +1650,67 @@ Page({
   },
 
   /**
-   * 删除一条排队消息（2026-10-05 用户：手机要能删）。
+   * 取消一条排队消息（2026-10-05 用户重做：mp 端要能取消，且状态以 dsh 为准）。
    *
-   * **host 说删不掉就照实说**：已经发出去的在跑，撤不回来（agent 的 inbox
-   * 不归我们管）。这时候照原样留着 + 提示，而不是假装删掉了。
+   * 三种状态各有各的做法，toast 也各说各的话：
+   *   held    主机还扣着（含"已转给内核但还没确认跑"）→ 问主机删，真消失
+   *   sent    内核确认在跑 → 问主机删，主机那边是**中断这一轮**
+   *   failed  压根没发出去 → 本机就能删，不必麻烦主机
+   *
+   * **本地永远不自己删**：这一份是主机快照的镜子，本地增删就会出现主机那头
+   * 没有、手机这头消不掉的幽灵。host 答应了，下一帧快照会把它抹掉。
    */
   onDropQueued: function (e) {
     var key = e.currentTarget.dataset.key
-    var self = this
     var list = this.data.pending || []
     var hit = null
     for (var i = 0; i < list.length; i++) {
       if (list[i].key === key) hit = list[i]
     }
     if (!hit) return
-    // 主机还扣着的才需要问主机；失败的那条本机就能删
-    if (hit.state !== 'held') {
-      if (hit.state === 'failed') {
-        this.setData({
-          pending: list.filter(function (x) {
-            return x.key !== key
-          }),
-        })
-        return
-      }
-      wx.showToast({ title: '已经发给主机在跑了，撤不回来', icon: 'none' })
+    var self = this
+    // 没发出去的那条本机就能删：主机从没收过它，问它只是多一次往返
+    if (hit.state === 'failed') {
+      this.setData({
+        pending: list.filter(function (x) {
+          return x.key !== key
+        }),
+      })
       return
     }
+    // sent 的那条要点取消：先问一句，说清这是**中断**不是删除。
+    // 不问就中断的话，用户以为只是把排队里那条划掉，结果整轮对话停了——
+    // 那比"无法取消"更吓人。held 不问：它还没跑，拿掉没有副作用。
+    if (hit.state === 'sent') {
+      wx.showModal({
+        title: '取消这条？',
+        content: '它已经在主机上跑了。取消会中断当前这一轮，主机随后转去消化下一条。',
+        confirmText: '中断',
+        cancelText: '继续跑',
+        confirmColor: '#d54941',
+        success: function (r) {
+          if (!r.confirm) return
+          self.sendDrop(hit)
+        },
+      })
+      return
+    }
+    this.sendDrop(hit)
+  },
+
+  /** 真的把取消请求发给主机。本地不删——下一帧快照会抹掉它。 */
+  sendDrop: function (hit) {
+    var self = this
     this.client.dropQueued(this.data.sessionId, hit.queueId).then(function (r) {
       if (r && r.ok) return
-      // 主机不答应：多半是它已经开始跑了。照实说，别把本地那条删掉
+      // 主机不答应：照实说它给的原因，别把本地那条删掉
       wx.showToast({
         title: String((r && r.message) || '这条删不掉').slice(0, 40),
         icon: 'none',
       })
     })
   },
+
 
 
 

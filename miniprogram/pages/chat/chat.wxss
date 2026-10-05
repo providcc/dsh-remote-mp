@@ -1125,6 +1125,24 @@
   border-radius: 12rpx;
 }
 
+/* 在跑标记：只给 sent 的那一条。held 不给——整条排队条已经叫「等主机消化」，
+   再说一遍是噪音；failed 已经有自己的原因行。
+   **不用品牌色**：第一版用 --td-brand-color 配 brand-light，深色主题下是
+   #2667d4 on #1b2f51 = 2.53:1，被对比度闸门当场拦下（check-mp-contrast 第 1002 行）。
+   在跑是好消息，但颜色要为可读性让路，所以走 secondary 那一对，
+   深浅两主题都过 4.5:1。 */
+.queue-state {
+  flex: 0 0 auto;
+  margin-right: 16rpx;
+  padding: 0 12rpx;
+  border-radius: 8rpx;
+  background: var(--td-bg-color-secondarycontainer, #f3f3f3);
+  font-size: 20rpx;
+  line-height: 32rpx;
+  color: var(--td-text-color-secondary, #5c6470);
+}
+
+
 /* 序号用最轻的一档：它只是次序，不是消息本身（消息本身在右侧是实心品牌气泡，
    这里再放一颗品牌色圆点就是跟用户自己撞色）。 */
 .queue-index {
