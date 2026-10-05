@@ -1649,13 +1649,35 @@ Page({
 
   // ── 图片附件：加号 → 相册（拍照与文件这一代先不做）───
   /**
-   * 点加号直接开相册。
+   * 2026-10-05 用户改主意：'文件要放在加号里面，弹出选图片还是文件'。
+   * 1.1.5 删掉那个二级菜单，是因为当时只有图片、多一次点击纯属浪费；
+   * 现在有图片和文件两种，选哪个是用户的决定，不是我能替他定的。
    *
-   * 2026-10-05 用户拍板：原来先弹一张单选项 action sheet（"图片（从相册选）"），
-   * 括号里的说明正是用户点名不要的；而这一代只有图片一种附件，中间那一屏不解释
-   * 任何事、只多一次点击。条数上限的提示留着。
+   * 用**原生 showActionSheet**，不自建面板：两行代码、平台一致、
+   * 不用新样式也不引图标（这一页一个图标组件都没有）。
+   *
+   * 条数上限的提示留着：满了还弹选择是浪费一次点击，
+   * 但满这件事得说清楚，不然用户会以为加号坏了。
    */
   onAttach: function () {
+    var self = this
+    var room = MAX_ATTACH - this.data.attachments.length
+    if (room <= 0) {
+      wx.showToast({ title: '一条消息最多带 ' + MAX_ATTACH + ' 个附件', icon: 'none' })
+      return
+    }
+    wx.showActionSheet({
+      itemList: ['图片', '文件'],
+      success: function (r) {
+        // 用户取消时 success 不来，什么都不做——那是"改主意了"，不是错误
+        if (r.tapIndex === 1) self._pickFiles()
+        else self._pickImages()
+      },
+    })
+  },
+
+  /** 相册选图。走 压缩 -> 缩到定长边 -> 读成 base64 那条老链。 */
+  _pickImages: function () {
     var self = this
     var room = MAX_ATTACH - this.data.attachments.length
     if (room <= 0) {
@@ -1729,7 +1751,8 @@ Page({
       },
     })
   },
-  onAttachFile: function () {
+  /** 微信会话/收藏里选文件。入口是加号里那一项（见 onAttach）。 */
+  _pickFiles: function () {
     var self = this
     var room = MAX_ATTACH - this.data.attachments.length
     if (room <= 0) {

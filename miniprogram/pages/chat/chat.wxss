@@ -1246,22 +1246,7 @@
    那个菜单 1.1.5 刚按用户要求删掉（加号直接进相册），加回来是翻烧饼；
    而一个常驻的小按钮比藏起来的菜单好找。做成文字而不是图标：这一页
    的纪律是不引图标库（真机缺字形），而文件两个字比自绘图标都清楚。 */
-.composer-file {
-  flex: 0 0 auto;
-  height: 72rpx;
-  padding: 0 22rpx;
-  border-radius: 999rpx;
-  background: var(--td-bg-color-secondarycontainer);
-  display: flex;
-  align-items: center;
-  margin-right: 16rpx;
-}
 
-.composer-file-label {
-  font-size: 26rpx;
-  line-height: 36rpx;
-  color: var(--td-text-color-secondary);
-}
 /* ── 输入区左侧加号（附件入口）────────────────────────────────────── */
 .composer-plus {
   position: relative;

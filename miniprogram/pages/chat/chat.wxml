@@ -481,12 +481,6 @@
       <!-- 选了几个附件：角标说，不占地方（用户："在加号上提示一下有几个附件"） -->
       <view wx:if="{{attachCount > 0}}" class="plus-badge">{{attachCount}}</view>
     </view>
-    <!-- 文件：单独的第二个入口。不加进加号的二级菜单，是因为那个菜单
-         1.1.5 刚按用户要求删掉（"加号直接进相册"），再加回来是翻烧饼；
-         而一个常驻的小入口比藏起来的菜单更好找。 -->
-    <view class="composer-file" hover-class="pressed" hover-stay-time="60" bindtap="onAttachFile">
-      <text class="composer-file-label">文件</text>
-    </view>
     <view class="composer-pill">
       <input
         class="composer-input"
