@@ -187,6 +187,9 @@ function parseRules(css) {
 const FG_ON = {
   'pages/chat/chat.wxss': {
     '.user-text': '.user', // 用户气泡里的白字，压蓝底
+    // 附件计数行（"图片 2 张"）同样是气泡里的白字。它挨着 .user-text 但不在
+    // 同一条规则里 —— 不登记就退化成页面底，把 #ffffff on #ffffff 报成 1:1 的假红。
+    '.user-images': '.user',
     '.opt-check': '.opt-on .opt-tick', // 选项勾里的 ✓，压选中态的蓝圆点
     // 发送按钮的白字压蓝底。文字与背景分在两条规则里（文字在 .send-label，
     // 底色在 .composer-send），所以要在这里登记 —— 否则检查器会退化成

@@ -149,7 +149,7 @@
               <!-- 图片**不画出来**（2026-10-05 用户："图片不用显示出来，在加号上提示一下
                    有几个附件就行了"）。带了几张用一行小字说，点开气泡也看不见图——
                    这一代起图片只是随消息发出的附件，不是要盯着看的东西。 -->
-              <view wx:if="{{item.images && item.images.length}}" class="user-images">图片 {{item.images.length}} 张</view>
+              <view wx:if="{{item.images && item.images.length}}" class="user-images">附件 {{item.images.length}} 项</view>
               <view wx:if="{{item.text}}" class="user-text">{{item.text}}</view>
             </view>
           </view>
@@ -457,24 +457,29 @@
     </block>
   </view>
 
-  <!-- 待发送的图片附件：**不再画缩略图**（2026-10-05 用户："图片不用显示出来，
+  <!-- 待发送的附件（图 + 文件）：**一个都不画缩略图**（2026-10-05 用户："图片不用显示出来，
        在加号上提示一下有几个附件就行了，目前内容比较多有点挤"）。
-       选了几张由加号右上角的角标说；点一下角标可以全部撤掉。 -->
+       选了几个由加号右上角的角标说；这一行说明它们会随下一条消息发出，"撤掉"全部清空。 -->
   <view wx:if="{{attachCount && attachCount > 0}}" class="attach">
-    <view class="attach-hint">已选 {{attachCount}} 张 随下一条消息发出</view>
+    <view class="attach-hint">已选 {{attachCount}} 项 随下一条消息发出</view>
     <view class="attach-clear" hover-class="pressed" catchtap="onClearAttachments">撤掉</view>
   </view>
 
-  <!-- 输入区：左侧加号（附件入口）+ 胶囊输入框 + 右侧「发送」文字按钮。
+  <!-- 输入区：左侧两个附件入口（加号=图片、旁边=文件）+ 胶囊输入框 + 右侧「发送」。
        catchtap：点输入框本身不该被外层当成"点了空白"而收键盘 -->
   <view class="composer" catchtap="onNoop">
-    <!-- 加号：这一代只放"图片"（相册）。拍照与文件留白但话说明白——
-         入口撒谎比没有入口更糟。 -->
+    <!-- 加号：相册选图。用户 1.1.5 明确要求"直接进相册"，所以它不做二级菜单。 -->
     <view class="composer-plus" hover-class="pressed" hover-stay-time="60" bindtap="onAttach">
       <view class="plus-bar"></view>
       <view class="plus-bar plus-bar-v"></view>
-      <!-- 选了几张图：角标说，不占地方（用户："在加号上提示一下有几个附件"） -->
+      <!-- 选了几个附件：角标说，不占地方（用户："在加号上提示一下有几个附件"） -->
       <view wx:if="{{attachCount > 0}}" class="plus-badge">{{attachCount}}</view>
+    </view>
+    <!-- 文件：单独的第二个入口。不加进加号的二级菜单，是因为那个菜单
+         1.1.5 刚按用户要求删掉（"加号直接进相册"），再加回来是翻烧饼；
+         而一个常驻的小入口比藏起来的菜单更好找。 -->
+    <view class="composer-file" hover-class="pressed" hover-stay-time="60" bindtap="onAttachFile">
+      <text class="composer-file-label">文件</text>
     </view>
     <view class="composer-pill">
       <input

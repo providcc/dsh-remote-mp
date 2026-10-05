@@ -409,13 +409,26 @@ class DrcClient {
    * **只映射协议要的字段**——本地路径（path）之类都不上线。
    * 一条最多 4 张（协议层上限）；调用方（chat 页）已经按这个数收过一轮。
    */
-  sendPrompt(sessionId, text, images, cmdId) {
+  /**
+   * 发一条指令。images / files 都是可选附件（wire 1.3.0 起，files 是 1.6.0 加的）。
+   *
+   * 两类附件在协议里就是两个字段，**只映射协议要的那几个字段**——本机路径（path）
+   * 之类都不上线。图片固定 image/jpeg（画布重编码出来的就是它），文件带名字和类型标签。
+   *
+   * 两类的条数上限都是 4（协议层同一个数）；调用方（chat 页）已经按这个数收过一轮。
+   */
+  sendPrompt(sessionId, text, images, files, cmdId) {
     var cmd = {
       t: 'cmd.send_prompt',
       // 调用方可以自带 cmdId（要等回执时）；不带就自己分配。
       cmdId: cmdId || this.newCmdId(),
       sessionId: sessionId,
       text: text,
+    }
+    if (files && files.length) {
+      cmd.files = files.slice(0, 4).map(function (a) {
+        return { name: a.name, mediaType: a.mediaType, data: a.data }
+      })
     }
     if (images && images.length) {
       cmd.images = images.slice(0, 4).map(function (a) {
@@ -439,7 +452,7 @@ class DrcClient {
    *
    * @returns Promise<{ok: boolean, message?: string}>。`ok:false` 一定带可读原因。
    */
-  sendPromptReceipt(sessionId, text, images) {
+  sendPromptReceipt(sessionId, text, images, files) {
     var self = this
     if (this.status !== 'online') {
       return Promise.resolve({
@@ -470,7 +483,7 @@ class DrcClient {
       }
       timer = setTimeout(done, COMMAND_TIMEOUT_MS)
       self._cmdWaiters[cmdId] = done
-      if (!self.sendPrompt(sessionId, text, images, cmdId)) done(null)
+      if (!self.sendPrompt(sessionId, text, images, files, cmdId)) done(null)
     })
   }
 

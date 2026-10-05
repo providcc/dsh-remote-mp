@@ -62,13 +62,13 @@ var MAX_BLOCKS = 400
 /**
  * 图片附件的两条参数（与 wire 的 imageAttachment 对齐）。
  *
- * MAX_IMAGES = 4：协议层的上限就是 4（再多对"看清楚"没帮助，只是把帧撑爆——
+ * MAX_ATTACH = 4：协议层图片与文件的上限都是 4（再多对"看清楚"没帮助，只是把帧撑爆——
  * 中继 maxMessageBytes 是硬上限，超了整条帧被掐）。
  * IMAGE_QUALITY = 0.6：截图/报错这一类用途完全够。⚠️ compressImage 的 quality
  * **在 Android 上被系统忽略**（真机只会按 sizeType 压一次），所以这只是"尽力"，
  * 真正的体积纪律是 sizeType: ['compressed'] + chooseMedia 的 count 上限。
  */
-var MAX_IMAGES = 4
+var MAX_ATTACH = 4
 var IMAGE_QUALITY = 0.6
 /** 分段进度条最多几格（多了就把前 7 条画出来，最后一格表示还有更多）。 */
 var TODO_SEG_MAX = 8
@@ -88,6 +88,16 @@ var IMAGE_LONG_EDGE = 1600
  * 合计闸 512KB 留了余量给 cmdId/sessionId 等字段。单张闸等于合计闸：
  * 一张就顶格时它先说话，不至于被"合计"那条含糊过去。
  */
+/**
+ * 文件附件的字节预算：与图片同一组数。
+ *
+ * 为什么单文件也是 512KB：预算不是按文件还是图分的，是按**中继那条 1MB 硬帧上限**
+ * 倒推的（base64 胀 4/3 + 密文封装 -> 一条消息的原始字节超约 540KB 就过不去）。
+ * 文件没有压缩这一步，所以这个数就是一条消息能带走多少个文件的上界，
+ * 超了明说该减哪一个，而不是让整条帧被掐成莫名掉线。
+ */
+var MAX_ATTACH_BYTES = 512 * 1024
+var MAX_ATTACH_TOTAL_BYTES = 512 * 1024
 var MAX_IMAGE_BYTES = 512 * 1024
 var MAX_IMAGE_TOTAL_BYTES = 512 * 1024
 var MAX_TEXT_PER_BLOCK = 20000
@@ -1518,6 +1528,8 @@ Page({
   onSend: function () {
     var text = String(this.data.inputText || '').trim()
     var images = this.data.attachments.slice()
+    var files = images.filter(function (a) { return a.kind === 'file' })
+    var pics = images.filter(function (a) { return a.kind !== 'file' })
     if (!text && !images.length) return
     if (!this.data.sessionId) return
     this.setData({ inputText: '', attachments: [], attachCount: 0 })
@@ -1526,7 +1538,7 @@ Page({
     // 手机自己再维护一份队列 = 两个队列：主机消化掉第一条之后，手机那份
     // 既不知道也不跟着动，用户看到的就是"第一条被消费后，我排的队全没了"
     // （2026-10-05 用户报）。所以现在只发，然后等回执与回传。
-    this._sendNow(text, images)
+    this._sendNow(text, images, files, pics)
   },
 
   /**
@@ -1537,7 +1549,7 @@ Page({
    *   - 没收下 → 也进 `pending`（state 'failed'）+ 一句原因，等空闲时重试。
    *     原来这条路是静默的：消息看着发出去了，其实哪儿都没到。
    */
-  _sendNow: function (text, images) {
+  _sendNow: function (text, images, files, pics) {
     // 轮次号交给 `_commit` 重排（它知道历史那一侧已经占了多少轮），这里只给时间
     var blocks = this._append(this.data.blocks, {
       key: 'r' + this._counter++,
@@ -1552,22 +1564,24 @@ Page({
       confirmed: false,
       // 附件跟着这条回显一起显示：本机临时文件，会话里看得见（主机存的是另一份）
       images: images,
+      files: files,
+      attachCount: images.length,
     })
     // 自己发的消息必须看到
     this._autoScroll = true
     this.setData({ atBottom: true })
     this._commit(blocks)
-    this._dispatch(text, images)
+    this._dispatch(text, pics, files)
   },
 
   /**
    * 发给主机 + 等回执 + 记账。**不碰回显块**：重发一条没收下的消息时
    * 会话里那一行已经在原地了，再画一遍就是两条。
    */
-  _dispatch: function (text, images) {
+  _dispatch: function (text, images, files) {
     var self = this
     this.client
-      .sendPromptReceipt(this.data.sessionId, text, images)
+      .sendPromptReceipt(this.data.sessionId, text, images, files)
       .then(function (r) {
         if (r.ok) {
           self._pendingAdd(text, images, 'queued')
@@ -1643,9 +1657,9 @@ Page({
    */
   onAttach: function () {
     var self = this
-    var room = MAX_IMAGES - this.data.attachments.length
+    var room = MAX_ATTACH - this.data.attachments.length
     if (room <= 0) {
-      wx.showToast({ title: '一条消息最多带 ' + MAX_IMAGES + ' 张图', icon: 'none' })
+      wx.showToast({ title: '一条消息最多带 ' + MAX_ATTACH + ' 个附件', icon: 'none' })
       return
     }
     wx.chooseMedia({
@@ -1679,13 +1693,127 @@ Page({
    * 闸要留（中继 1MB 硬帧上限，见 {@link MAX_IMAGE_TOTAL_BYTES} 的注释），
    * 但得先把图真的压小，而不是拿闸去挡用户。
    */
+  /**
+   * 文件附件入口（2026-10-05 用户：文件附件也支持一下）。
+   *
+   * 与图片入口的三处不同：
+   * 1. 用 chooseMessageFile 而不是 chooseMedia——它给的是微信会话/收藏里的任意文件，
+   *    type 字段就是扩展名（不带点）。
+   * 2. **没有压缩**。图压完还是图，文件压完就打不开了——用户要的是把这个东西发给
+   *    Agent 看，不是一张更糊的图。所以体积纪律全靠预算闸。
+   * 3. 与图片共用同一条预算：中继单帧 1MB 是硬上限，超了整帧被掐、socket 1009
+   *    莫名掉线。合计算不清的账不能让用户付。
+   */
+  onAttachFile: function () {
+    var self = this
+    var room = MAX_ATTACH - this.data.attachments.length
+    if (room <= 0) {
+      wx.showToast({ title: '一条消息最多带 ' + MAX_ATTACH + ' 个附件', icon: 'none' })
+      return
+    }
+    wx.chooseMessageFile({
+      count: room,
+      success: function (r) {
+        self._acceptPickedFiles(r.tempFiles || [])
+      },
+    })
+  },
+
+  /** 逐份文件：读成 base64 -> 过预算闸 -> 进 attachments。
+   *
+   * 读的是 tempFilePath（chooseMessageFile 给的就是这个字段；1.1.6 踩过的坑：
+   * 老代码读 f.path，那个字段从来不存在，于是每张图都读不出来）。
+   */
+  _acceptPickedFiles: function (files) {
+    var self = this
+    var out = []
+    var i = 0
+    var next = function () {
+      if (i >= files.length) {
+        var kept = self.data.attachments.concat(out).slice(0, MAX_ATTACH)
+        self.setData({ attachments: kept, attachCount: kept.length })
+        return
+      }
+      var f = files[i++]
+      var filePath = f.tempFilePath
+      if (!filePath) {
+        wx.showToast({ title: '这个文件读不出来 换一个试试', icon: 'none' })
+        next()
+        return
+      }
+      var meta = {
+        kind: 'file',
+        name: f.name || f.fileName,
+        type: f.type,
+        size: f.size,
+      }
+      self._readAsBase64(filePath, meta, out, next, self)
+    }
+    next()
+  },
+
+  /** 过预算闸 + 进 attachments。图片那两道闸（单张/合计）原样复用。
+   *
+   * 名字保留扩展名：Agent 认文件靠它（主机侧 safeSegment 只收敛字符，不动点）。
+   */
+  _acceptFile: function (filePath, meta, base64, out, done) {
+    var self = this
+    if (!base64) {
+      wx.showToast({ title: '这个文件读不出来 换一个试试', icon: 'none' })
+      done()
+      return
+    }
+    var bytes = Math.floor((base64.length * 3) / 4)
+    var already = 0
+    for (var k = 0; k < self.data.attachments.length; k++) {
+      already += Math.floor((self.data.attachments[k].data.length * 3) / 4)
+    }
+    for (var m = 0; m < out.length; m++) {
+      already += Math.floor((out[m].data.length * 3) / 4)
+    }
+    if (bytes > MAX_ATTACH_BYTES) {
+      wx.showToast({
+        title:
+          '这个文件有 ' +
+          Math.round(bytes / 1024) +
+          'KB 超过单附件上限 ' +
+          Math.round(MAX_ATTACH_BYTES / 1024) +
+          'KB',
+        icon: 'none',
+      })
+      done()
+      return
+    }
+    if (already + bytes > MAX_ATTACH_TOTAL_BYTES) {
+      wx.showToast({
+        title:
+          '一条消息最多 ' +
+          Math.round(MAX_ATTACH_TOTAL_BYTES / 1024) +
+          'KB 附件 已经带了 ' +
+          Math.round(already / 1024) +
+          'KB',
+        icon: 'none',
+      })
+      done()
+      return
+    }
+    out.push({
+      kind: 'file',
+      name: String(meta.name || meta.fileName || 'file-' + out.length),
+      path: filePath,
+      data: base64,
+      mediaType: meta.type || undefined,
+      size: bytes,
+    })
+    done()
+  },
   _compressPicked: function (files) {
     var self = this
     var out = []
     var i = 0
     var next = function () {
       if (i >= files.length) {
-        var kept = self.data.attachments.concat(out).slice(0, MAX_IMAGES)
+        var kept = self.data.attachments.concat(out).slice(0, MAX_ATTACH)
         self.setData({ attachments: kept, attachCount: kept.length })
         return
       }
@@ -1787,8 +1915,9 @@ Page({
    */
   _readAsBase64: function (path, meta, out, done, self) {
     if (!self) self = this
+    var isFile = meta && meta.kind === 'file'
     var giveUp = function () {
-      wx.showToast({ title: '这张图读不出来', icon: 'none' })
+      wx.showToast({ title: isFile ? '换一个试试' : '这张图读不出来', icon: 'none' })
       done()
     }
     var triedDownload = false
@@ -1798,7 +1927,8 @@ Page({
         encoding: 'base64',
         success: function (r) {
           var base64 = String(r.data || '')
-          self._acceptImage(path, filePath, meta, base64, out, done)
+          if (isFile) self._acceptFile(filePath, meta, base64, out, done)
+          else self._acceptImage(path, filePath, meta, base64, out, done)
         },
         fail: function () {
           // `http://tmp/...` 那条路：本地临时服务地址，readFile 不认它，

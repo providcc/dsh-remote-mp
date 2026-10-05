@@ -67,6 +67,8 @@ function collect() {
       has(api, 'getImageInfo') &&
       has(api, 'canvasToTempFilePath'),
     compressImage: has(api, 'compressImage'),
+    // 文件附件入口：老 SDK 没有这个 API 时按钮要点得动但要说清为什么选不了
+    chooseMessageFile: has(api, 'chooseMessageFile'),
     storage: has(api, 'getStorageSync') && has(api, 'setStorageSync'),
     scanCode: has(api, 'scanCode'),
   }
