@@ -38,46 +38,91 @@
 /* ── 待办条（顶部，默认收起）────────────────────────────────────────────
    位置是用户定的：顶部。它是"这一轮在干什么"的索引，混进消息流会和步骤组
    互相踩；排队消息在底部输入区上方，两端分开谁都不挤。
-   配色走容器底 + 主色小勾：主色只出现在那颗勾和展开后的"进行中"行，
-   其他地方一律次要文字色 —— 这一条是索引，不是第二个正文区。 */
+
+   2026-10-05 重设计（用户："todo 界面太丑"）。审美上的病根是**一行的字号的
+   层级分不开**：旧版 24/22/22 三个字号挨在一起，进度、计数、看点、动作
+   四种信息一个重量的。现在是四层，从重到轻：
+     1. 分段进度（ branded 的格子，扫一眼完）
+     2. "在进行哪条"——正文级，主文字色 + medium
+     3. 计数（待办 1/2）——次要，等宽数字
+     4. 展开/收起 + 三角——最轻，placeholder
+   品牌色只出现在格子上（非文字，不判对比度）；文字一个都不用它。 */
 .todo-bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  padding: 14rpx 24rpx;
+  padding: 16rpx 24rpx;
   background: var(--td-bg-color-secondarycontainer);
   border-bottom: 2rpx solid var(--td-component-border);
 }
 
-/* 那颗勾：没全做完时是空心圈（border-only），全做完了填品牌色。 */
-.todo-check {
+/* 分段进度：一格一条。completed 实心、in_progress 半高（进行到一半）、
+   pending 空心。不用字体图标也不用 emoji——真机上缺字形会显示成方框。 */
+.todo-segs {
   flex: 0 0 auto;
-  width: 22rpx;
-  height: 22rpx;
-  margin-right: 12rpx;
-  border: 3rpx solid var(--td-text-color-placeholder);
-  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  margin-right: 18rpx;
 }
 
-.todo-all-done {
+/* 一格一条。尺寸定在 26×12：再小（第一版 18×8）在真机上根本读不出"格子"，
+   只看见一条虚线；再大就开始跟右边的计数抢主角。 */
+.todo-seg {
+  width: 26rpx;
+  height: 12rpx;
+  border-radius: 6rpx;
+  background: transparent;
+  border: 2rpx solid var(--td-text-color-placeholder);
+  box-sizing: border-box;
+}
+
+.todo-seg-completed {
   border-color: var(--td-brand-color);
   background: var(--td-brand-color);
 }
 
+/* 进行中：只填下半——"进行到一半"是个一眼符号，比一个实点更像在动。 */
+.todo-seg-in_progress {
+  border-color: var(--td-brand-color);
+  background: linear-gradient(to top, var(--td-brand-color) 50%, transparent 50%);
+}
+
+/* 第七条之后的那一格：还有更多条目，但这一行不打算把它们全画出来。 */
+.todo-seg-more {
+  width: 12rpx;
+  border-color: var(--td-text-color-placeholder);
+  border-left-width: 0;
+  border-radius: 0 4rpx 4rpx 0;
+  border-right-width: 6rpx;
+  border-style: dashed;
+  border-right-style: solid;
+}
+
 .todo-count {
   flex: 0 0 auto;
-  font-size: 24rpx;
+  font-size: 22rpx;
   color: var(--td-text-color-secondary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5rpx;
+}
+
+/* 计数与看点之间的发丝竖线：两段信息挨着还是要能看出是两段。 */
+.todo-vline {
+  flex: 0 0 auto;
+  width: 2rpx;
+  height: 22rpx;
+  margin: 0 16rpx;
+  background: var(--td-component-border);
 }
 
 /* 收起态露出的"在进行哪条"：一个轮次的看点就在这一条，所以比计数重一档。
    颜色用主文字色而不是品牌色——真机上 #2667d4 在深色容器上只有 2.94:1
-   （对比度体检抓的，2026-10-05）。品牌色只出现在那颗状态点上（非文字，不判对比度）。 */
+   （对比度体检抓的，2026-10-05）。 */
 .todo-running {
   flex: 0 1 auto;
   min-width: 0;
-  margin-left: 16rpx;
-  font-size: 22rpx;
+  font-size: 24rpx;
   font-weight: 500;
   color: var(--td-text-color-primary);
   overflow: hidden;
@@ -90,38 +135,69 @@
   min-width: 16rpx;
 }
 
+/* 展开/收起：与排队那颗同一种语言（文字 + 三角），并降到最轻一档。 */
 .todo-toggle {
   flex: 0 0 auto;
-  font-size: 22rpx;
+  display: flex;
+  align-items: center;
+  gap: 6rpx;
+  padding: 8rpx 0 8rpx 16rpx;
+}
+
+.todo-toggle-text {
+  font-size: 20rpx;
   color: var(--td-text-color-placeholder);
 }
 
+/* 三角： sessions 页"手动输入"那一颗同一画法（两条 border 转出来的，无字形依赖）。 */
+.caret {
+  width: 0;
+  height: 0;
+  border-left: 8rpx solid transparent;
+  border-right: 8rpx solid transparent;
+  border-top: 9rpx solid var(--td-text-color-placeholder);
+}
+
+.caret-up {
+  border-top: 0;
+  border-bottom: 9rpx solid var(--td-text-color-placeholder);
+}
+
 /* 展开的面板：最多四行半（约 300rpx），超了滚动 —— 待办再多也只是索引，
-   不许把消息区整屏顶掉（长队列那条教训同理）。 */
+   不许把消息区整屏顶掉（长队列那条教训同理）。
+   重设计后它是**浮在灰带上的一张卡片**（容器底色而不是 SecondaryContainer）：
+   "这只是个索引"和"这是正文"从此不在一个平面 上，展开也不会把整条灰带撑得更厚。 */
 .todo-panel {
   flex: 0 0 auto;
   max-height: 300rpx;
   overflow-y: auto;
-  padding: 8rpx 24rpx 16rpx;
-  background: var(--td-bg-color-secondarycontainer);
-  border-bottom: 2rpx solid var(--td-component-border);
+  margin: 0 24rpx 16rpx;
+  padding: 4rpx 20rpx;
+  background: var(--td-bg-color-container);
+  border-radius: 16rpx;
+}
+
+/* 条目之间的发丝线：八条以上时线比间距更清楚谁是谁。 */
+.todo-item + .todo-item {
+  border-top: 2rpx solid var(--td-component-border);
 }
 
 .todo-item {
   display: flex;
   align-items: flex-start;
-  padding: 10rpx 0;
+  padding: 14rpx 0;
 }
 
 /* 状态点：pending 灰圈、in_progress 品牌色半满、completed 品牌色实点。
    不用 emoji 也不用字体图标 —— 真机上缺字形会显示成方框。 */
 .todo-mark {
   flex: 0 0 auto;
-  width: 16rpx;
-  height: 16rpx;
-  margin: 8rpx 14rpx 0 0;
+  width: 18rpx;
+  height: 18rpx;
+  margin: 10rpx 16rpx 0 0;
   border: 3rpx solid var(--td-text-color-placeholder);
   border-radius: 50%;
+  box-sizing: border-box;
 }
 
 .todo-mark.in_progress {
@@ -141,7 +217,7 @@
 .todo-text {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 24rpx;
+  font-size: 26rpx;
   line-height: 1.5;
   color: var(--td-text-color-primary);
 }
@@ -999,41 +1075,55 @@
   border-top: 2rpx solid var(--td-component-border);
 }
 
+/* 表头与待办条同一种语言：文字 + 三角，且都降到最轻一档。 */
 .queue-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12rpx 24rpx;
+  padding: 14rpx 24rpx 10rpx;
 }
 
 .queue-title {
-  font-size: 24rpx;
+  font-size: 22rpx;
   color: var(--td-text-color-secondary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5rpx;
 }
 
 .queue-toggle {
-  font-size: 24rpx;
-  color: var(--td-text-color-primary);
+  display: flex;
+  align-items: center;
+  gap: 6rpx;
+  padding: 8rpx 0;
 }
 
+.queue-toggle-text {
+  font-size: 20rpx;
+  color: var(--td-text-color-placeholder);
+}
+
+/* 每条是浮在灰带上的一张卡片。旧版是一条光秃的横排：序号圆点、正文、
+   删除号三个元素平摊在同一层灰底上，读起来像一行设置项而不是"一条消息"。 */
 .queue-item {
   display: flex;
   align-items: flex-start;
-  padding: 8rpx 24rpx 12rpx;
+  margin: 0 24rpx 12rpx;
+  padding: 16rpx 12rpx 16rpx 20rpx;
+  background: var(--td-bg-color-container);
+  border-radius: 12rpx;
 }
 
+/* 序号用最轻的一档：它只是次序，不是消息本身（消息本身在右侧是实心品牌气泡，
+   这里再放一颗品牌色圆点就是跟用户自己撞色）。 */
 .queue-index {
   flex: 0 0 auto;
-  width: 32rpx;
-  height: 32rpx;
-  border-radius: 50%;
-  background: var(--td-brand-color-light);
-  color: var(--td-text-color-brand);
-  font-size: 20rpx;
-  line-height: 32rpx;
-  text-align: center;
+  min-width: 28rpx;
   margin-right: 12rpx;
-  margin-top: 4rpx;
+  font-size: 22rpx;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--td-text-color-placeholder);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 超长文本截断：一行写完，写不下省略号（用户要求：不许把输入区顶开）。 */
@@ -1058,16 +1148,29 @@
   margin-top: 8rpx;
 }
 
+/* 删除按钮：两根斜杠画一个 ×，不用字符 ×。字符 × 在真机上是一粒脏东西——
+   它不是图标字体，基线位置、字号、颜色全都跟着正文走，按下去也没有反馈。 */
 .queue-del {
   flex: 0 0 auto;
+  position: relative;
   width: 44rpx;
   height: 44rpx;
-  line-height: 40rpx;
-  text-align: center;
-  border-radius: 50%;
-  font-size: 32rpx;
-  color: var(--td-text-color-placeholder);
   margin-left: 8rpx;
+}
+
+.queue-del-bar {
+  position: absolute;
+  left: 12rpx;
+  top: 20rpx;
+  width: 20rpx;
+  height: 3rpx;
+  border-radius: 2rpx;
+  background: var(--td-text-color-placeholder);
+  transform: rotate(45deg);
+}
+
+.queue-del-bar-b {
+  transform: rotate(-45deg);
 }
 
 /* ── 图片附件（待发送）────────────────────────────────────────────── */

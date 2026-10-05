@@ -34,13 +34,32 @@
        默认收起只报进度（2/5），点一下展开全文，点消息区任意处自动收回 ——
        一屏就一屏的内容，常驻展开会挤掉正在看的正文。没有待办时整块不占地方。 -->
   <block wx:if="{{todos.length}}">
+    <!-- 重设计（2026-10-05 用户："todo 界面太丑"）。三处改动：
+         1. 那颗空心圈换成**分段进度条**——"2/5"是一个要动脑的数字，五格里填了三格
+            是扫一眼就完的；超过 8 条时折叠成 7 格 + 一个 +n（不然每条都被压成一丝）。
+         2. 层级重排：进度在最左（它是这一条的主角），计数用等宽数字且降一档，
+            "在进行哪条"是正文级的看点所以给主文字色 + medium。旧版三种字号
+            （24/22/22）挨在一起，糊成一行分不出主次。
+         3. 展开/收起统一成"文字 + 三角"——与排队那颗同一种语言，且都降到最次要。 -->
     <view class="todo-bar" hover-class="pressed" hover-stay-time="80" bindtap="onToggleTodos">
-      <view class="todo-check {{todoDone === todos.length ? 'todo-all-done' : ''}}"></view>
+      <view class="todo-segs" wx:if="{{todoSegs.length}}">
+        <view
+          wx:for="{{todoSegs}}"
+          wx:key="*this"
+          class="todo-seg {{item === 'more' ? 'todo-seg-more' : 'todo-seg-' + item}}"
+        ></view>
+      </view>
       <text class="todo-count">待办 {{todoDone}}/{{todos.length}}</text>
+      <view class="todo-vline"></view>
       <text wx:if="{{todoRunning}}" class="todo-running">{{todoRunningText}}</text>
       <view class="todo-gap"></view>
-      <text class="todo-toggle">{{todosOpen ? '收起' : '展开'}}</text>
+      <view class="todo-toggle">
+        <text class="todo-toggle-text">{{todosOpen ? '收起' : '展开'}}</text>
+        <view class="caret {{todosOpen ? 'caret-up' : ''}}"></view>
+      </view>
     </view>
+    <!-- 展开的面板：重设计后是一张**卡片**（容器底色压在灰带之上），
+         条目之间用发丝线分隔而不是靠 padding 猜——八条以上时线比间距更清楚。 -->
     <view wx:if="{{todosOpen}}" class="todo-panel">
       <view
         wx:for="{{todos}}"
@@ -399,11 +418,18 @@
   </view>
 
   <!-- 排队中的消息：贴在输入区上方。默认展开；长队列收成一行汇总——
-       不许把消息区顶掉（用户报过的要求：可收起、超长截断）。 -->
+       不许把消息区顶掉（用户报过的要求：可收起、超长截断）。
+       重设计（2026-10-05 用户："排队消息太丑"）：与待办条同一套语言——
+       右侧都是"文字 + 三角"，条目都是浮在灰带上的**卡片**；序号那颗品牌色圆点
+       删了（它和右侧“自己发的”实心气泡撞色，而这只是次序不是消息），
+       删除按钮从字符 × 改成两根斜杠画的 ×（字符 × 在真机上像一粒脏东西）。 -->
   <view wx:if="{{queue.length}}" class="queue">
     <view class="queue-head" hover-class="pressed" hover-stay-time="60" bindtap="onToggleQueue">
       <text class="queue-title">排队中 {{queue.length}} 条</text>
-      <text class="queue-toggle">{{queueOpen ? '收起' : '展开'}}</text>
+      <view class="queue-toggle">
+        <text class="queue-toggle-text">{{queueOpen ? '收起' : '展开'}}</text>
+        <view class="caret {{queueOpen ? 'caret-up' : ''}}"></view>
+      </view>
     </view>
     <block wx:if="{{queueOpen}}">
       <view class="queue-item" wx:for="{{queue}}" wx:key="key">
@@ -415,7 +441,10 @@
             <image class="queue-thumb" wx:for="{{item.images}}" wx:for-item="img" wx:key="path" src="{{img.path}}" mode="aspectFill" />
           </block>
         </view>
-        <view class="queue-del" hover-class="pressed" catchtap="onDequeue" data-key="{{item.key}}">×</view>
+        <view class="queue-del" hover-class="pressed" catchtap="onDequeue" data-key="{{item.key}}">
+          <view class="queue-del-bar"></view>
+          <view class="queue-del-bar queue-del-bar-b"></view>
+        </view>
       </view>
     </block>
   </view>
