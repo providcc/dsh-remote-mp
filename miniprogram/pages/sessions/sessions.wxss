@@ -342,19 +342,25 @@
      左列（标题+路径）仍靠自己的 padding 保持原来的视觉重量。 */
   align-items: flex-start;
   padding: 24rpx 24rpx 24rpx 0;
+  /* 卡与卡之间的缝。以前是一张大卡 + 2rpx 灰线，现在一张一卡，
+     缝就靠这条 margin。最后一张下面也多 20rpx——比用 :last-child
+     或塞一个显式 spacer 元素都便宜，且那点余量刚好把它和
+     "已隐藏 N 个归档会话"那句话隔开。 */
+  margin-bottom: 20rpx;
 }
 
-.sess-line {
-  height: 2rpx;
-  margin-left: 30rpx;
-  background: var(--td-component-border, #dcdcdc);
-}
 
-/* 色条贴左边框：圆角只给右侧，免得被卡片的 overflow:hidden 裁掉 */
+/* 左侧状态色条：卡片化之后贴满整张卡的左边缘（2026-10-05）。
+   以前是一整张大卡里的一行，色条只需对着那一行的高度（64rpx）；
+   现在一张一卡，色条成了"这张卡的状态"，通高才看得成一条完整的边。
+   align-self:stretch 要父级 align-items 不是 stretch 才生效——.sess 是
+   flex-start，所以这里显式写 stretch 覆盖它。
+   圆角只给右侧：左边被父级 overflow:hidden 切出卡片的圆角。 */
 .sess-bar {
   flex: 0 0 auto;
+  align-self: stretch;
   width: 8rpx;
-  height: 64rpx;
+  min-height: 64rpx;
   border-radius: 0 8rpx 8rpx 0;
 }
 
@@ -369,31 +375,33 @@
 }
 
 
-/* 标题独占一行（项目名挪到右上角，标题这一列不再有 chip 抢宽度）。
-
-
+/* 标题独占一行：项目名挪到右上角之后，这一列不再有 chip 抢宽度 */
 .sess-title {
   font-size: 30rpx;
   line-height: 42rpx;
 }
 
-/* 项目名：卡片右上角的角标（2026-10-05 用户：放右上角，像分类卡，
-   去掉标签样式、字体再小点）。
-   **底色去掉了**。chip 那种满底方块放在右上角会压出一块色斑，
-   而项目名只是补充信息（完整路径就在标题下面），不该有那种视觉重量；
-   分类卡的角标都是纯文字小号弱化色。
-   2026-10-04 它在标题右边（抢标题宽度），同日上午又改成单独一行
-   （把行高撑成三行），两版都挤——右上角是第三个也是最合适的答案。
-   ⚠️ 颜色用 placeholder 而不是更淡的自定义色：它得能读，只是不该
-   被当成一行内容。 */
+/* 项目名：描边小胶囊（2026-10-05 用户："现在项目文字一点样式都没有"）。
+   上午那版把 background/padding/border-radius 全删了，成了纯灰文字，
+   在卡片里弱到几乎看不见——删过头了。这一版用**描边**找回样式：
+   - 描边而不是填色：右侧状态徽标（.sess-badge）是实心填色，同色实心
+     会被读成同一类东西。"形"上错开——描边=分类，实心=状态。
+     这也解释了 10-04 那版 chip 为什么用品牌蓝：当时就是为了错开。
+   - 颜色走 .sess-badge 同一对 token（secondarycontainer 底 / secondary 字），
+     这两个值在灰徽标上已经过了对比度闸门，不引入新的配色风险。
+   - 圆角用 999rpx（跟徽标一致）而不是 chip 的 8rpx：圆角越小越像按钮，
+     而它是标签。字号 20rpx，比徽标的 22rpx 再小一档。 */
 .sess-tag {
   margin-bottom: 10rpx;
+  padding: 0 14rpx;
+  border: 2rpx solid var(--td-component-border, #e7e7e7);
+  border-radius: 999rpx;
   font-size: 20rpx;
   line-height: 28rpx;
-  color: var(--td-text-color-placeholder, #a0a6b0);
+  color: var(--td-text-color-secondary, #5c6470);
 }
 
-/* 完整目录：有 tag 短名之后它退成补充信息，再小一号 */
+/* 完整路径：右上角给短名，这里给能直接复制的全路径 */
 .sess-sub {
   margin-top: 8rpx;
   font-size: 20rpx;
