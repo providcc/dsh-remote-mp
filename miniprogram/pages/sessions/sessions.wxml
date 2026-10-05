@@ -140,16 +140,20 @@
         description="{{hiddenArchived ? '这里只有归档会话，已隐藏' : (status === 'online' ? '主机上还没有会话。点上面的「＋ 新建会话」开一条' : '连上主机后，这里会列出它的会话')}}" />
     </view>
 
-    <!-- 一条会话一张卡（2026-10-05 用户：会话列表的会话做成卡片）。
-         2026-10-04 起的做法是细线分隔：一整块大白卡里用 2rpx 灰线切开。
-         问题是横线把"标题列"压得更窄，而且会话之间本没有从属关系——
-         用线连成一排像表格，用卡片分开才像一组各自独立、可分管的东西。
-         卡片之间的缝由 .sess 的 margin-bottom 给，不用 :last-child
-         （wxss 选择器支持面越窄越好，这条纪律跟当年不用 :not 一致）。 -->
-    <view wx:else class="sess-list">
-      <block wx:for="{{sessions}}" wx:key="id">
+    <!-- 一条会话一行，整张列表一张卡（2026-10-05 用户：还是原来的样式，不要卡片）。
+         2026-10-05 白天那一版"一会话一卡"（1.1.16）撤了。
+         但排版重排了：原来是**三栏**——左边一列（标题/路径），右边一列
+         （项目名/徽标/时间），于是一件事被拆成两列读，右列还摞了三层。
+         现在两行，按"读的人先关心什么"排：
+             第一行  标题 ............. 状态徽标
+             第二行  [项目名] 全路径 ......... 时间
+         也就是"是什么"一行，"挂在哪儿、什么时候"一行。 -->
+    <view wx:else class="card">
+      <block wx:for="{{sessions}}" wx:for-index="idx" wx:key="id">
+        <!-- 分隔线用显式元素而不是 :not(:last-child)：wxss 的选择器支持面越窄越好 -->
+        <view wx:if="{{idx > 0}}" class="sess-line"></view>
         <view
-          class="card sess"
+          class="sess"
           hover-class="pressed"
           hover-stay-time="80"
           data-id="{{item.id}}"
@@ -159,28 +163,25 @@
           <view class="sess-bar {{item.badgeTheme}}"></view>
 
           <view class="sess-main">
-            <!-- 标题独占一行（项目名挪到右上角之后，标题左边这一列不再有 chip 抢宽度） -->
-            <view class="sess-title ellipsis">{{item.title}}</view>
-            <!-- 完整目录弱化在下面：右上角给短名，这里给全路径 -->
-            <view class="sess-sub ellipsis">{{item.workspace || item.id}}</view>
-          </view>
-
-          <view class="sess-right">
-            <!-- 项目名：卡片右上角的描边小胶囊（2026-10-05 用户：放右上角、
-                 像分类卡，并且"一点样式都没有"不行）。三次搬家的结果：
-                 10-04 在标题右边（抢标题宽度），10-05 上午单独一行
-                 （行高撑成三行），现在回到右上角但换成独立的卡片之后，
-                 右上角终于有空位放它了。
-                 **描边而不是填色**是刻意的：右侧那颗状态徽标
-                 （空闲/运行中/待审批）是实心填色，这边再同色实心就会
-                 被读成同一类东西。换成"形"上错开——描边=分类，
-                 实心=状态。字号比徽标再小一档。 -->
-            <view wx:if="{{item.workspaceTag}}" class="sess-tag">{{item.workspaceTag}}</view>
-            <view class="sess-badge {{item.badgeTheme}}">
-              <view wx:if="{{item.running}}" class="pulse"></view>
-              <text>{{item.badgeText}}</text>
+            <!-- 第一行：标题 + 状态。两者都是"这条现在怎么了"，放一行。 -->
+            <view class="sess-head">
+              <view class="sess-title ellipsis">{{item.title}}</view>
+              <view class="sess-badge {{item.badgeTheme}}">
+                <view wx:if="{{item.running}}" class="pulse"></view>
+                <text>{{item.badgeText}}</text>
+              </view>
             </view>
-            <view class="sess-time">{{item.updatedAt}}</view>
+            <!-- 第二行：项目名 + 完整路径 + 时间。
+                 [项目名] 是**描边**小胶囊（2026-10-05 用户：项目文字得有样式）。
+                 描边而不是填色是刻意的：第一行那颗状态徽标是实心填色，
+                 这边再同色实心就会被读成同一类东西——用"形"错开，
+                 描边=分类，实心=状态。
+                 它跟全路径挨着放：两个都是"这条会话挂在哪儿"的信息。 -->
+            <view class="sess-meta">
+              <view wx:if="{{item.workspaceTag}}" class="sess-tag">{{item.workspaceTag}}</view>
+              <view class="sess-sub ellipsis">{{item.workspace || item.id}}</view>
+              <view class="sess-time">{{item.updatedAt}}</view>
+            </view>
           </view>
         </view>
       </block>

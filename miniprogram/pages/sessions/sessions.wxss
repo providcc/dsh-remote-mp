@@ -337,31 +337,30 @@
 
 .sess {
   display: flex;
-  /* align-items:center → flex-start：右列多了一项右上角项目名，
-     整行再居中的话它会被压到徽标上面而不是贴在卡顶。
-     左列（标题+路径）仍靠自己的 padding 保持原来的视觉重量。 */
+  /* flex-start：两行文字比 64rpx 的色条高，center 会让色条悬在中间。 */
   align-items: flex-start;
   padding: 24rpx 24rpx 24rpx 0;
-  /* 卡与卡之间的缝。以前是一张大卡 + 2rpx 灰线，现在一张一卡，
-     缝就靠这条 margin。最后一张下面也多 20rpx——比用 :last-child
-     或塞一个显式 spacer 元素都便宜，且那点余量刚好把它和
-     "已隐藏 N 个归档会话"那句话隔开。 */
-  margin-bottom: 20rpx;
 }
 
 
-/* 左侧状态色条：卡片化之后贴满整张卡的左边缘（2026-10-05）。
-   以前是一整张大卡里的一行，色条只需对着那一行的高度（64rpx）；
-   现在一张一卡，色条成了"这张卡的状态"，通高才看得成一条完整的边。
-   align-self:stretch 要父级 align-items 不是 stretch 才生效——.sess 是
-   flex-start，所以这里显式写 stretch 覆盖它。
+/* 左侧状态色条：一整张卡里的一行，所以只需要对着这一行的高度。
+   通高（stretch）是 10-05 白天"一会话一卡"那版的产物——那张每行自成一个
+   卡片，色条要当卡片的完整边。现在回到一张大卡，色条回到 64rpx。
    圆角只给右侧：左边被父级 overflow:hidden 切出卡片的圆角。 */
 .sess-bar {
   flex: 0 0 auto;
-  align-self: stretch;
   width: 8rpx;
-  min-height: 64rpx;
+  height: 64rpx;
   border-radius: 0 8rpx 8rpx 0;
+}
+
+/* 行与行之间的细线。1.1.16 曾把它删掉改成一会话一卡，
+   用户明确说"还是原来的样式（不要卡片）"，所以它回来了。
+   左边留 30rpx 缩进：贴着色条太挤，也跟卡片的圆角打架。 */
+.sess-line {
+  height: 2rpx;
+  margin-left: 30rpx;
+  background: var(--td-component-border, #dcdcdc);
 }
 
 .sess-bar.primary { background: var(--td-brand-color, #0052d9); }
@@ -375,24 +374,32 @@
 }
 
 
-/* 标题独占一行：项目名挪到右上角之后，这一列不再有 chip 抢宽度 */
+/* 标题：第一行里占比最大的那块。flex:1 让它把徽挤到右边后剩下的全占，
+   min-width:0 是 ellipsis 能生效的前提（flex 子项默认不会窄于内容宽）。 */
 .sess-title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 30rpx;
   line-height: 42rpx;
 }
 
-/* 项目名：描边小胶囊（2026-10-05 用户："现在项目文字一点样式都没有"）。
-   上午那版把 background/padding/border-radius 全删了，成了纯灰文字，
-   在卡片里弱到几乎看不见——删过头了。这一版用**描边**找回样式：
-   - 描边而不是填色：右侧状态徽标（.sess-badge）是实心填色，同色实心
-     会被读成同一类东西。"形"上错开——描边=分类，实心=状态。
-     这也解释了 10-04 那版 chip 为什么用品牌蓝：当时就是为了错开。
-   - 颜色走 .sess-badge 同一对 token（secondarycontainer 底 / secondary 字），
-     这两个值在灰徽标上已经过了对比度闸门，不引入新的配色风险。
-   - 圆角用 999rpx（跟徽标一致）而不是 chip 的 8rpx：圆角越小越像按钮，
-     而它是标签。字号 20rpx，比徽标的 22rpx 再小一档。 */
+/* 第一行：标题 + 状态徽标。两者都是"这条现在怎么了"，所以一行。 */
+.sess-head {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* 项目名：第二行里的描边小胶囊（2026-10-05 用户：项目文字得有样式）。
+   它跟全路径挨着：两个都是"这条会话挂在哪儿"的信息。
+   **描边而不是填色**是刻意的：第一行那颗状态徽标（.sess-badge）是实心
+   填色，这边再同色实心就会被读成同一类东西——用"形"错开，
+   描边=分类，实心=状态。（10-04 那版 chip 用品牌蓝也是为同一个理由。）
+   颜色走 .sess-badge 同一对 token，那两个值已过对比度闸门。
+   圆角 999rpx 跟徽标一致：chip 当年用 8rpx，圆角越小越像按钮，它是标签。 */
 .sess-tag {
-  margin-bottom: 10rpx;
+  flex: 0 0 auto;
+  margin-right: 12rpx;
   padding: 0 14rpx;
   border: 2rpx solid var(--td-component-border, #e7e7e7);
   border-radius: 999rpx;
@@ -401,27 +408,31 @@
   color: var(--td-text-color-secondary, #5c6470);
 }
 
-/* 完整路径：右上角给短名，这里给能直接复制的全路径 */
+/* 第二行：项目名 + 全路径 + 时间。都是次要信息，小一号。 */
+.sess-meta {
+  display: flex;
+  align-items: center;
+  margin-top: 6rpx;
+  min-width: 0;
+}
+
+/* 全路径：flex:1 吃掉胶囊和时间之外剩下的宽度，min-width:0 让 ellipsis 生效。
+   这一行三项里只有它能被压缩——胶囊是固定内容，时间固定宽度。 */
 .sess-sub {
-  margin-top: 8rpx;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 20rpx;
   color: var(--td-text-color-placeholder, #a0a6b0);
 }
 
-.sess-right {
-  flex: 0 0 auto;
-  margin-left: 16rpx;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  /* 项目名与标题第一行对齐：标题 line-height 42rpx、本项目名 28rpx，
-     上下各让 7rpx 才是视觉中线。少了这 7rpx 它明显比标题高半个字。 */
-  padding-top: 7rpx;
-}
 
+/* 状态徽标：第一行最右。实心填色——这就是项目名必须用描边的原因。
+   flex:0 0 auto 保证它不被标题压扁（时间戳也同理）。 */
 .sess-badge {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
+  margin-left: 16rpx;
   font-size: 22rpx;
   line-height: 32rpx;
   padding: 2rpx 14rpx;
@@ -440,8 +451,11 @@
   color: var(--td-warning-color-6, #be5a00);
 }
 
+/* 时间：第二行最右。flex:0 0 auto + margin-left 让它死贴右边，
+   路径被截断时它不动。 */
 .sess-time {
-  margin-top: 8rpx;
+  flex: 0 0 auto;
+  margin-left: 12rpx;
   font-size: 20rpx;
   color: var(--td-text-color-placeholder, #a0a6b0);
 }
