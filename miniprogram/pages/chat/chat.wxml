@@ -145,7 +145,10 @@
                外面套一层整宽的 row 来负责"靠哪边"，气泡自己只管长相 —— 
                这样 .blk 不用改成 flex，其它块的布局一点不受影响。 -->
           <view wx:elif="{{item.kind === 'user'}}" class="user-row">
-            <view class="user">
+            <!-- 长按复制：聊天信息要能复制（2026-10-05 用户）。
+                 data-text 绑的是 item.text 原文，不做加工——复制出去的应当就是
+                 会话里那一条，不是另一个版本。 -->
+            <view class="user" bindlongpress="onCopyMessage" data-text="{{item.text}}">
               <!-- 图片**不画出来**（2026-10-05 用户："图片不用显示出来，在加号上提示一下
                    有几个附件就行了"）。带了几张用一行小字说，点开气泡也看不见图——
                    这一代起图片只是随消息发出的附件，不是要盯着看的东西。 -->
@@ -266,7 +269,10 @@
                ⚠️ 两支的 `wx:if` 都要**独立**（不能是上一支的 `wx:elif`）：
                上一支 `item.kind==='text'` 成立时，后面按 kind 分支就永远不执行了。 -->
           <view wx:if="{{item.kind === 'text'}}" class="reply-row">
-            <view class="reply">
+            <!-- 长按复制（与用户气泡同一套）。绑在 .reply 上而不是里面的
+                 rich-text / text 上：那有两支（mdBodies 有 / 没有），各绑一遍
+                 就是同一个动作两个地方管。 -->
+            <view class="reply" bindlongpress="onCopyMessage" data-text="{{item.text}}">
               <!-- Markdown 渲染。
 
                    ⚠️⚠️ `nodes` 必须绑**顶层 map 的一层索引**（`mdBodies[item.key]`），

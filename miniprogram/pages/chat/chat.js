@@ -1704,6 +1704,31 @@ Page({
    * 3. 与图片共用同一条预算：中继单帧 1MB 是硬上限，超了整帧被掐、socket 1009
    *    莫名掉线。合计算不清的账不能让用户付。
    */
+  /**
+   * 长按复制一条聊天信息（2026-10-05 用户：chat 中的聊天信息要可以复制）。
+   *
+   * 三处决定：
+   * 1. **只认 user / text 两种块**。步骤组不给复制——用户明说 steps 不用，
+   *    而且那一条的价值在"它调了什么工具"，脱离会话复制出去没有意义。
+   *    wxml 里只在那两种气泡上绑 bindlongpress，这里是第二道。
+   * 2. **复制 item.text 原文，不做任何加工**。界面上 reply 那一条是渲染后的
+   *    markdown，但复制的仍是模型产出的原文：用户要的是"这一条的内容"，
+   *    不是一个被我猜过怎么排版的新版本。
+   * 3. **空文本不动作**。只有附件的消息（item.text 为空）长按不会有反应，
+   *    而不是把空串塞进剪贴板——那会覆盖掉用户原本复制的东西。
+   */
+  onCopyMessage: function (e) {
+    var ds = (e && e.currentTarget && e.currentTarget.dataset) || {}
+    var text = String(ds.text || '')
+    if (!text) return
+    wx.setClipboardData({
+      data: text,
+      success: function () {
+        // 中性色，不用成功色：这是"做完了"，不是需要用户注意的事
+        wx.showToast({ title: '已复制', icon: 'none' })
+      },
+    })
+  },
   onAttachFile: function () {
     var self = this
     var room = MAX_ATTACH - this.data.attachments.length
