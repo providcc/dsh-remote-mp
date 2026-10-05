@@ -19,14 +19,6 @@
     <view class="bar-text ellipsis">{{barText}}</view>
     <view class="bar-gap"></view>
     <text wx:if="{{modelName}}" class="bar-model ellipsis">{{modelName}}</text>
-    <view
-      wx:if="{{running}}"
-      class="bar-stop"
-      hover-class="pressed"
-      hover-stay-time="80"
-      bindtap="onInterrupt">
-      <view class="bar-stop-icon"></view>
-    </view>
   </view>
 
   <!-- 待办条（todo list）。做在**顶部**是用户定的位：它是"这一轮在干什么"的索引，
@@ -428,54 +420,6 @@
        只是体积大一点。 -->
   <canvas type="2d" id="drc-shrink" class="drc-shrink"></canvas>
 
-  <!-- 等 dsh 消化的消息：贴在输入区上方。默认展开；长队列收成一行汇总——
-       不许把消息区顶掉（用户报过的要求：可收起、超长截断）。
-       2026-10-05 三件事一起改：
-           队列，而是**视图**——消息先进 dsh 自己的排队表（PromptQueue），
-           内核确认在跑才标成 sent；这一份跟着主机推来的 ev.queue 快照整体替换。
-           2026-10-05 傍晚重做后，主机自己起的回合也会出现在这里。
-        2) **2026-10-05 傍晚重做**：三种状态都能取消。
-           held 问主机拿掉（真消失）；sent 问主机**中断这一轮**；
-           failed 本机就删（主机从没收过它）。
-           这里原先写的是「条目不再给删除，删不掉 inbox 里的东西」——
-           那句话现在只对一半：host 确实删不掉 agent inbox，
-           但它有 interrupt，所以 sent 那条给的是中断而不是删除。
-       3) 用户："图片不用显示出来，加号上提示一下有几个附件就行了，内容太多有点挤"：
-          缩略图全删，图片只用"N 张"两个字说。 -->
-  <view wx:if="{{pending.length}}" class="queue">
-    <view class="queue-head" hover-class="pressed" hover-stay-time="60" bindtap="onToggleQueue">
-      <text class="queue-title">等主机消化 {{pending.length}} 条</text>
-      <view class="queue-toggle">
-        <text class="queue-toggle-text">{{queueOpen ? '收起' : '展开'}}</text>
-        <view class="caret {{queueOpen ? 'caret-up' : ''}}"></view>
-      </view>
-    </view>
-    <block wx:if="{{queueOpen}}">
-      <view class="queue-item {{item.state === 'failed' ? 'queue-item-failed' : ''}}" wx:for="{{pending}}" wx:key="key">
-        <view class="queue-index">{{index + 1}}</view>
-        <view class="queue-body">
-          <!-- 超长文本截断靠 wxss 的 ellipsis；一条只有图时文字位给一句人话。
-               图片不画缩略图（用户：内容太多有点挤），只说几张。 -->
-          <view class="queue-text">{{item.text || ('附件 ' + (item.images + item.files) + ' 项')}}</view>
-          <text wx:if="{{item.state === 'failed'}}" class="queue-failed">{{item.message || '没发出去，空闲时重试'}}</text>
-        </view>
-        <!-- 删除：三种状态都给按钮（2026-10-05 用户重做：mp 端要能取消）。
-             held 问主机拿掉，sent 问主机中断，failed 本机就删。
-             以前 sent 不给按钮，用户看到的就是无法取消；
-             而按钮背后各有各的做法，不是一个死按钮。 -->
-          <!-- 在跑标记（2026-10-05 用户重做：状态不许撒谎，也别让人看不出来）。
-      held 不给标签——整条排队条已经叫「等主机消化」了，再说一遍是噪音。
-      sent 必须给：它是真在跑的那一条，点了删除是「中断」不是「拿掉」，
-      用户得事先知道这一条跟别人不一样。 -->
-      <text wx:if="{{item.state === 'sent'}}" class="queue-state">在跑</text>
-      <view class="queue-del" hover-class="pressed" catchtap="onDropQueued" data-key="{{item.key}}">
-          <view class="queue-del-bar"></view>
-          <view class="queue-del-bar queue-del-bar-b"></view>
-        </view>
-      </view>
-    </block>
-  </view>
-
   <!-- 待发送的附件（图 + 文件）：**一个都不画缩略图**（2026-10-05 用户："图片不用显示出来，
        在加号上提示一下有几个附件就行了，目前内容比较多有点挤"）。
        选了几个由加号右上角的角标说；这一行说明它们会随下一条消息发出，"撤掉"全部清空。 -->
@@ -507,7 +451,19 @@
         bindinput="onInput"
         bindconfirm="onSend" />
     </view>
+    <!-- 同一个键，两种身份（2026-10-05 用户：执行中不许提交，发送键变中断键）。
+         不在别处再挂一颗：同一个动作有两个入口，用户会怀疑哪个才是真的，
+         而且拇指不用为了停一次而挪位置。执行中它不再是"发出去"，是"停下来"。 -->
     <view
+      wx:if="{{running}}"
+      class="composer-send composer-stop"
+      hover-class="pressed"
+      hover-stay-time="80"
+      bindtap="onInterrupt">
+      <text class="send-label">中断</text>
+    </view>
+    <view
+      wx:else
       class="composer-send {{inputText ? '' : 'off'}}"
       hover-class="{{inputText ? 'pressed' : ''}}"
       hover-stay-time="80"

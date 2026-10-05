@@ -216,19 +216,6 @@ Page({
     /** 是否已贴底。false 时浮出「回到最新」 */
     atBottom: true,
     /**
-     * 已经交给 dsh、还没被它消化的消息（2026-10-05 重做为**视图**）。
-     *
-     * 2026-10-05 用户拍板：排队要以 dsh 为准。`agent.followup()` 本来就把消息排进
-     * dsh 自己的 inbox，手机再维护一份队列等于两个队列：主机消化掉第一条之后，
-     * 手机那份既不知道也不跟着动，用户看到的就是"第一条被消费后我排的队全没了"。
-     * 所以：会话在跑也照样发；这一份只是跟着主机回执/回传改写的视图——
-     * 回执说"收下了"进来，宿主回传这条消息时出去。
-     * 一项：`{key, text, images, state:'queued'|'failed', message}`。
-     */
-    pending: [],
-    /** pending 默认展开；收起之后只留一行汇总（长队列不许把消息区顶掉）。 */
-    queueOpen: true,
-    /**
      * 待办清单（内核 `todo/write` → `ev.todo`，全量快照）。
      * 一项：`{content, status: 'pending' | 'in_progress' | 'completed'}`。
      * 与 pending（底部、等 dsh 消化的指令）分管上下两端，互不打架。
@@ -348,7 +335,6 @@ Page({
     this.client.listSessions()
     this._maybeLoadHistory()
     // 排队是「以 dsh 为准」：进会话/回前台主动问一次，别等主机恰好有变化。
-    this._pullQueue()
   },
 
   /**
@@ -542,7 +528,6 @@ Page({
     if (p.t === 'ev.run_state') return this._onRunState(p)
     // 排队快照（2026-10-05 用户：排队要双向同步）。主机是唯一的真相源，
     // 这里整体替换——不在本地增删，本地增删就又变回一份猜的队列。
-    if (p.t === 'ev.queue') return this._onQueue(p)
     if (p.t === 'ev.todo') return this._onTodo(p)
     if (p.t === 'ev.result') {
       if (!p.ok && p.message) wx.showToast({ title: String(p.message).slice(0, 40), icon: 'none' })
@@ -567,7 +552,6 @@ Page({
         this._commit(this._ensureThinkOpen(this.data.blocks))
       } else {
         this._stopThinkTick()
-        this._pendingRetry()
       }
       this._renderBar()
       return
@@ -1038,10 +1022,6 @@ Page({
   _onUserEcho: function (text) {
     var want = String(text || '').trim()
     if (!want) return
-    // 宿主回传 = dsh 开始消化这一条了：pending 里对应的那一条可以划掉。
-    // 先进先出（不按文本比）：带图的消息宿主回传的是加了图片说明的正文，
-    // 原文本对不上；而 dsh 是按入队顺序消化的，队列顺序本身就是判据。
-    this._pendingTake()
     var blocks = this.data.blocks
     for (var i = blocks.length - 1; i >= 0; i--) {
       var b = blocks[i]
@@ -1279,15 +1259,9 @@ Page({
       blocks = this._ensureThinkOpen(blocks)
     } else {
       this._stopThinkTick()
-      // 刚从在跑变成空闲：没收下的那几条这时候重发（主机此刻一定有空档）
-      this._pendingRetry()
     }
     this._renderBar()
     this._commit(blocks)
-    // 刚闲下来：排队里的消息按序发（用户打了一句"继续"多半就是这个时刻）。
-    // ⚠️ 必须放在这次 commit **之后**：_sendNow 自己会再 commit 一次（本地回显），
-    // 而上面那个 blocks 是进水前的快照——先排水的话这一句会把回显整段盖掉。
-    if (!running) this._pendingRetry()
   },
 
   // ── 步骤组的动作 ──────────────────────────────────────────────────
@@ -1545,22 +1519,23 @@ Page({
     var pics = images.filter(function (a) { return a.kind !== 'file' })
     if (!text && !images.length) return
     if (!this.data.sessionId) return
+    // 执行中不许提交（2026-10-05 用户：取消排队）。
+    // 这条在 wxml 上已经做了一层（发送键在跑时变成中断键），这里是兜底：
+    // 键盘的 send 键走的是 bindconfirm，绕不过那颗按钮，光靠按钮拦不住。
+    if (this.data.running) {
+      wx.showToast({ title: '正在跑，先中断再发', icon: 'none' })
+      return
+    }
     this.setData({ inputText: '', attachments: [], attachCount: 0 })
-    // **不再本地排队**：会话在跑也照样发。dsh 的 agent 有 inbox——
-    // `agent.followup()` 就是"排一个跟进回合并唤醒驱动"，队列本来就在主机那一侧。
-    // 手机自己再维护一份队列 = 两个队列：主机消化掉第一条之后，手机那份
-    // 既不知道也不跟着动，用户看到的就是"第一条被消费后，我排的队全没了"
-    // （2026-10-05 用户报）。所以现在只发，然后等回执与回传。
     this._sendNow(text, images, files, pics)
   },
 
   /**
    * 本地回显 + 发出去，然后等主机回执。
    *
-   * 回执只有两种结局，两种都要落到 `pending` 上让人看得见：
-   *   - 收下了 → 进 `pending`（state 'queued'）：这是 dsh inbox 里还没开始跑的那条；
-   *   - 没收下 → 也进 `pending`（state 'failed'）+ 一句原因，等空闲时重试。
-   *     原来这条路是静默的：消息看着发出去了，其实哪儿都没到。
+   * 回执只有一个用处：没发出去时说一句原因。取消排队之前这里还有一条
+   * "pending 视图"要维护，现在没有了——消息要么到了主机，要么没到，
+   * 不存在"收到了但还在等"这种中间态（用户：排队没有意义）。
    */
   _sendNow: function (text, images, files, pics) {
     // 轮次号交给 `_commit` 重排（它知道历史那一侧已经占了多少轮），这里只给时间
@@ -1588,197 +1563,34 @@ Page({
   },
 
   /**
-   * 发给主机 + 等回执 + 记账。**不碰回显块**：重发一条没收下的消息时
+   * 发给主机 + 等回执。**不碰回显块**：重发一条没收下的消息时
    * 会话里那一行已经在原地了，再画一遍就是两条。
+   *
+   * 2026-10-05 取消排队：回执只剩「发出去 / 没发出去」两种，没有中间态。
+   * 没发出去就 toast 一句原因——用户看到的是一次失败，而不是一条撤不掉的幽灵。
    */
   _dispatch: function (text, images, files) {
-    var self = this
     this.client
-      .sendPromptReceipt(this.data.sessionId, text, images, files, 'q' + self._counter++)
+      .sendPromptReceipt(this.data.sessionId, text, images, files)
       .then(function (r) {
-        if (r.ok) {
-          self._pendingAdd(text, images, 'queued', '', r.data && r.data.queued)
-          return
-        }
-        self._pendingAdd(text, images, 'failed', r.message)
+        if (r.ok) return
         wx.showToast({ title: String(r.message || '这条没发出去').slice(0, 40), icon: 'none' })
       })
       .catch(function () {
-        self._pendingAdd(text, images, 'failed', '这条没发出去')
+        wx.showToast({ title: '这条没发出去', icon: 'none' })
       })
   },
 
-  /**
-   * 加一条"已经交给 dsh、还没被它消化"的消息。
-   *
-   * 这是**视图**，不是第二个队列：条目在主机回执说"收下了"时进来，在宿主回传
-   * 这条消息（`ev.message_delta` role=user）时出去——也就是 dsh 真的开始跑它的
-   * 那一刻。中途换页/断线重连都不丢，因为真相在主机那边，这边只是跟着改写。
-   */
-  _pendingAdd: function (text, images, state, message, queueId) {
-    var item = {
-      key: 'q' + this._counter++,
-      text: text,
-      images: images,
-      state: state,
-      message: message || '',
-      queueId: queueId || '',
-    }
-    this.setData({ pending: this.data.pending.concat([item]) })
-    if (wx.vibrateShort) wx.vibrateShort({ type: 'light' })
-  },
-
-  /** 宿主回传了某条用户消息：dsh 已经开始消化它，从 pending 里划掉。先进先出。 */
-  _pendingTake: function () {
-    if (!this.data.pending.length) return
-    this.setData({ pending: this.data.pending.slice(1) })
-  },  /**
-   * 主机排队条的真快照（双向同步的"同步"那一半）。
-   *
-   * 三条决定：
-   * 1. **整体替换**：手机这一份是镜子，不是第二个队列。本地增删一条
-   *     就会出现主机那头没有、手机这头消不掉的幽灵。
-   * 2. **key 用 queueId**：删除要对得上主机那一条，用主机给的号才不会错位。
-   * 3. 别的内容不动：快照本身就是全量，替换即最终态。
-   */
-  _onQueue: function (p) {
-    this._applyQueue(p.items || [])
-  },
-
-  /**
-   * 主机回执里的 items 与 ev.queue 里的 items 是**同一个形状**（同一个
-   * queueSnapshot 产出），所以只映射一次，两条路径共用。
-   * 本地不做增删：手机上的排队条永远是主机给的整份，不自己猜。
-   */
-  _applyQueue: function (items) {
-    var out = []
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i]
-      out.push({
-        key: it.queueId,
-        queueId: it.queueId,
-        text: it.text || '',
-        state: it.state,
-        message: it.message || '',
-        images: it.images || 0,
-        files: it.files || 0,
-      })
-    }
-    this.setData({ pending: out })
-  },
-
-  /**
-   * 主动问主机要当前排队（2026-10-05 用户实测第三点：进会话看不到排队）。
-   *
-   * **为什么每次 onShow 都要问**：ev.queue 只在状态变化时被动推送，而进会话、
-   * 切回前台、刚重连这三个时刻主机什么都没发生，不问就是空的。
-   * 问不到（未配对 / 离线 / 老主机不认识这条命令）就静默失败——那时 pending
-   * 保持原样，ev.queue 到了照样会覆盖，不该在这里清空。
-   */
-  _pullQueue: function () {
-    if (!this.client.isPaired() || this.client.status !== 'online') return
-    if (!this.data.sessionId) return
-    var self = this
-    this.client.getQueue(this.data.sessionId).then(function (r) {
-      if (!r || r.ok !== true) return
-      var d = r.data || {}
-      self._applyQueue(d.items || [])
-    }).catch(function () {
-      /* 拉不到就等 ev.queue，不给用户一个错误弹窗 */
-    })
-  },
-
-  /**
-   * 取消一条排队消息（2026-10-05 用户重做：mp 端要能取消，且状态以 dsh 为准）。
-   *
-   * 三种状态各有各的做法，toast 也各说各的话：
-   *   held    主机还扣着（含"已转给内核但还没确认跑"）→ 问主机删，真消失
-   *   sent    内核确认在跑 → 问主机删，主机那边是**中断这一轮**
-   *   failed  压根没发出去 → 本机就能删，不必麻烦主机
-   *
-   * **本地永远不自己删**：这一份是主机快照的镜子，本地增删就会出现主机那头
-   * 没有、手机这头消不掉的幽灵。host 答应了，下一帧快照会把它抹掉。
-   */
-  onDropQueued: function (e) {
-    var key = e.currentTarget.dataset.key
-    var list = this.data.pending || []
-    var hit = null
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].key === key) hit = list[i]
-    }
-    if (!hit) return
-    var self = this
-    // 没发出去的那条本机就能删：主机从没收过它，问它只是多一次往返
-    if (hit.state === 'failed') {
-      this.setData({
-        pending: list.filter(function (x) {
-          return x.key !== key
-        }),
-      })
-      return
-    }
-    // sent 的那条要点取消：先问一句，说清这是**中断**不是删除。
-    // 不问就中断的话，用户以为只是把排队里那条划掉，结果整轮对话停了——
-    // 那比"无法取消"更吓人。held 不问：它还没跑，拿掉没有副作用。
-    if (hit.state === 'sent') {
-      wx.showModal({
-        title: '取消这条？',
-        content: '它已经在主机上跑了。取消会中断当前这一轮，主机随后转去消化下一条。',
-        confirmText: '中断',
-        cancelText: '继续跑',
-        confirmColor: '#d54941',
-        success: function (r) {
-          if (!r.confirm) return
-          self.sendDrop(hit)
-        },
-      })
-      return
-    }
-    this.sendDrop(hit)
-  },
-
-  /** 真的把取消请求发给主机。本地不删——下一帧快照会抹掉它。 */
-  sendDrop: function (hit) {
-    var self = this
-    this.client.dropQueued(this.data.sessionId, hit.queueId).then(function (r) {
-      if (r && r.ok) return
-      // 主机不答应：照实说它给的原因，别把本地那条删掉
-      wx.showToast({
-        title: String((r && r.message) || '这条删不掉').slice(0, 40),
-        icon: 'none',
-      })
-    })
-  },
 
 
 
 
-  /** 会话空下来：把没收下的那几条重发一遍（主机那边从没收到过它们）。 */
-  _pendingRetry: function () {
-    var self = this
-    var failed = this.data.pending.filter(function (p) {
-      return p.state === 'failed'
-    })
-    if (!failed.length) return
-    this.setData({
-      pending: this.data.pending.filter(function (p) {
-        return p.state !== 'failed'
-      }),
-    })
-    for (var i = 0; i < failed.length; i++) {
-      // 逐条发：一次发一摞回去，主机那边又变成一堆同时到的 inbox 条目
-      ;(function (item) {
-        setTimeout(function () {
-          // 只重发，不再画一遍回显（那一行已经在会话里了）
-          self._dispatch(item.text, item.images)
-        }, i * 300)
-      })(failed[i])
-    }
-  },
 
-  onToggleQueue: function () {
-    this.setData({ queueOpen: !this.data.queueOpen })
-  },
+
+
+
+
+
 
   // ── 图片附件：加号 → 相册（拍照与文件这一代先不做）───
   /**
@@ -2198,11 +2010,6 @@ Page({
   },
 
   /** 从队列里撤回一条（还没发出去，撤就是真撤）。 */
-  /** 撤一条还没被 dsh 消化的（ failed 的那种：主机从没收到，撤就是真撤）。 */
-  onDequeue: function (e) {
-    var key = e.currentTarget.dataset.key
-    this.setData({ pending: this.data.pending.filter(function (q) { return q.key !== key }) })
-  },
 
   onInterrupt: function () {
     if (!this.data.sessionId) return

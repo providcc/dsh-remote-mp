@@ -1074,140 +1074,15 @@
   color: var(--td-text-color-anti);
 }
 
+/* 执行中的发送键 = 中断键。同一位置、同一形状，颜色说清身份变了：
+   品牌色是"发出去"，警示色是"停下来"。不用红——离线/未配对都不该报警，
+   而这里是用户主动按的停止，不是出了故障。 */
+.composer-stop {
+  background: var(--td-error-color, #d54941);
+}
+
 .composer-send.off .send-label {
   color: var(--td-text-color-placeholder);
-}
-
-/* ── 排队消息（贴在输入区上方）────────────────────────────────────── */
-.queue {
-  flex: 0 0 auto;
-  max-height: 260rpx;
-  overflow: hidden;
-  background: var(--td-bg-color-secondarycontainer);
-  border-top: 2rpx solid var(--td-component-border);
-}
-
-/* 表头与待办条同一种语言：文字 + 三角，且都降到最轻一档。 */
-.queue-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14rpx 24rpx 10rpx;
-}
-
-.queue-title {
-  font-size: 22rpx;
-  color: var(--td-text-color-secondary);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.5rpx;
-}
-
-.queue-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6rpx;
-  padding: 8rpx 0;
-}
-
-.queue-toggle-text {
-  font-size: 20rpx;
-  color: var(--td-text-color-placeholder);
-}
-
-/* 每条是浮在灰带上的一张卡片。旧版是一条光秃的横排：序号圆点、正文、
-   删除号三个元素平摊在同一层灰底上，读起来像一行设置项而不是"一条消息"。 */
-.queue-item {
-  display: flex;
-  align-items: flex-start;
-  margin: 0 24rpx 12rpx;
-  padding: 16rpx 12rpx 16rpx 20rpx;
-  background: var(--td-bg-color-container);
-  border-radius: 12rpx;
-}
-
-/* 在跑标记：只给 sent 的那一条。held 不给——整条排队条已经叫「等主机消化」，
-   再说一遍是噪音；failed 已经有自己的原因行。
-   **不用品牌色**：第一版用 --td-brand-color 配 brand-light，深色主题下是
-   #2667d4 on #1b2f51 = 2.53:1，被对比度闸门当场拦下（check-mp-contrast 第 1002 行）。
-   在跑是好消息，但颜色要为可读性让路，所以走 secondary 那一对，
-   深浅两主题都过 4.5:1。 */
-.queue-state {
-  flex: 0 0 auto;
-  margin-right: 16rpx;
-  padding: 0 12rpx;
-  border-radius: 8rpx;
-  background: var(--td-bg-color-secondarycontainer, #f3f3f3);
-  font-size: 20rpx;
-  line-height: 32rpx;
-  color: var(--td-text-color-secondary, #5c6470);
-}
-
-
-/* 序号用最轻的一档：它只是次序，不是消息本身（消息本身在右侧是实心品牌气泡，
-   这里再放一颗品牌色圆点就是跟用户自己撞色）。 */
-.queue-index {
-  flex: 0 0 auto;
-  min-width: 28rpx;
-  margin-right: 12rpx;
-  font-size: 22rpx;
-  font-weight: 600;
-  line-height: 1.4;
-  color: var(--td-text-color-placeholder);
-  font-variant-numeric: tabular-nums;
-}
-
-/* 超长文本截断：一行写完，写不下省略号（用户要求：不许把输入区顶开）。 */
-.queue-body {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.queue-text {
-  font-size: 26rpx;
-  color: var(--td-text-color-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 没收下的那几条：整行降到次要一档，原因另起一行说清（不能只是颜色变了）。 */
-.queue-item-failed .queue-text {
-  color: var(--td-text-color-placeholder);
-}
-
-.queue-failed {
-  display: block;
-  margin-top: 4rpx;
-  font-size: 20rpx;
-  color: var(--td-error-color);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-/* 删除按钮：两根斜杠画一个 ×，不用字符 ×。字符 × 在真机上是一粒脏东西——
-   它不是图标字体，基线位置、字号、颜色全都跟着正文走，按下去也没有反馈。 */
-.queue-del {
-  flex: 0 0 auto;
-  position: relative;
-  width: 44rpx;
-  height: 44rpx;
-  margin-left: 8rpx;
-}
-
-.queue-del-bar {
-  position: absolute;
-  left: 12rpx;
-  top: 20rpx;
-  width: 20rpx;
-  height: 3rpx;
-  border-radius: 2rpx;
-  background: var(--td-text-color-placeholder);
-  transform: rotate(45deg);
-}
-
-.queue-del-bar-b {
-  transform: rotate(-45deg);
 }
 
 /* ── 图片附件（待发送）──────────────────────────────────────────────
