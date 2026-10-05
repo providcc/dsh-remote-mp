@@ -452,10 +452,12 @@
         <view class="queue-body">
           <!-- 超长文本截断靠 wxss 的 ellipsis；一条只有图时文字位给一句人话。
                图片不画缩略图（用户：内容太多有点挤），只说几张。 -->
-          <view class="queue-text">{{item.text || ('图片 ' + item.images.length + ' 张')}}</view>
+          <view class="queue-text">{{item.text || ('附件 ' + (item.images + item.files) + ' 项')}}</view>
           <text wx:if="{{item.state === 'failed'}}" class="queue-failed">{{item.message || '没发出去，空闲时重试'}}</text>
         </view>
-        <view wx:if="{{item.state === 'failed'}}" class="queue-del" hover-class="pressed" catchtap="onDequeue" data-key="{{item.key}}">
+        <!-- 删除：只有 host 还扣着的（held）和本就没发出去的（failed）才给。
+             sent 的不给——那不是没做出来，是做了也删不掉，给个死按钮更糟。 -->
+        <view wx:if="{{item.state !== 'sent'}}" class="queue-del" hover-class="pressed" catchtap="onDropQueued" data-key="{{item.key}}">
           <view class="queue-del-bar"></view>
           <view class="queue-del-bar queue-del-bar-b"></view>
         </view>

@@ -417,7 +417,7 @@ class DrcClient {
    *
    * 两类的条数上限都是 4（协议层同一个数）；调用方（chat 页）已经按这个数收过一轮。
    */
-  sendPrompt(sessionId, text, images, files, cmdId) {
+  sendPrompt(sessionId, text, images, files, cmdId, queueId) {
     var cmd = {
       t: 'cmd.send_prompt',
       // 调用方可以自带 cmdId（要等回执时）；不带就自己分配。
@@ -429,6 +429,9 @@ class DrcClient {
       cmd.files = files.slice(0, 4).map(function (a) {
         return { name: a.name, mediaType: a.mediaType, data: a.data }
       })
+      // 排队要用（2026-10-05 用户：排队要双向同步、手机要能删）。
+      // 手机编的号，主机原样存、原样回、原样拿来删——删的时候对得上靠它。
+      if (queueId) cmd.queueId = String(queueId)
     }
     if (images && images.length) {
       cmd.images = images.slice(0, 4).map(function (a) {
@@ -452,7 +455,7 @@ class DrcClient {
    *
    * @returns Promise<{ok: boolean, message?: string}>。`ok:false` 一定带可读原因。
    */
-  sendPromptReceipt(sessionId, text, images, files) {
+  sendPromptReceipt(sessionId, text, images, files, queueId) {
     var self = this
     if (this.status !== 'online') {
       return Promise.resolve({
@@ -483,7 +486,25 @@ class DrcClient {
       }
       timer = setTimeout(done, COMMAND_TIMEOUT_MS)
       self._cmdWaiters[cmdId] = done
-      if (!self.sendPrompt(sessionId, text, images, files, cmdId)) done(null)
+      if (!self.sendPrompt(sessionId, text, images, files, cmdId, queueId)) done(null)
+    })
+  }
+
+  /**
+   * 删掉一条还扣在主机队列里的消息（2026-10-05 用户：手机要能删排队消息）。
+   *
+   * 为什么要单独一个方法（而不是复用 sendPromptReceipt）：回执语义不同。
+   * 发消息失败 = 主机没收下，消息还在手机上；删除失败 = 主机不让你删，
+   * 而**消息可能已经跑起来了**。这两种"没成"要分开说，用户才知道该重试还是算了。
+   *
+   * @returns Promise<{ok: boolean, message?: string}>
+   */
+  dropQueued(sessionId, queueId) {
+    return this.sendCmd({
+      t: 'cmd.drop_queued',
+      cmdId: this.newCmdId(),
+      sessionId: sessionId,
+      queueId: String(queueId),
     })
   }
 

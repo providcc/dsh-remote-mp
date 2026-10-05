@@ -530,6 +530,9 @@ Page({
     if (p.t === 'ev.question_request') return this._onQuestion(p)
     if (p.t === 'ev.question_resolved') return this._onQuestionResolved(p)
     if (p.t === 'ev.run_state') return this._onRunState(p)
+    // 排队快照（2026-10-05 用户：排队要双向同步）。主机是唯一的真相源，
+    // 这里整体替换——不在本地增删，本地增删就又变回一份猜的队列。
+    if (p.t === 'ev.queue') return this._onQueue(p)
     if (p.t === 'ev.todo') return this._onTodo(p)
     if (p.t === 'ev.result') {
       if (!p.ok && p.message) wx.showToast({ title: String(p.message).slice(0, 40), icon: 'none' })
@@ -1581,10 +1584,10 @@ Page({
   _dispatch: function (text, images, files) {
     var self = this
     this.client
-      .sendPromptReceipt(this.data.sessionId, text, images, files)
+      .sendPromptReceipt(this.data.sessionId, text, images, files, 'q' + self._counter++)
       .then(function (r) {
         if (r.ok) {
-          self._pendingAdd(text, images, 'queued')
+          self._pendingAdd(text, images, 'queued', '', r.data && r.data.queued)
           return
         }
         self._pendingAdd(text, images, 'failed', r.message)
@@ -1602,13 +1605,14 @@ Page({
    * 这条消息（`ev.message_delta` role=user）时出去——也就是 dsh 真的开始跑它的
    * 那一刻。中途换页/断线重连都不丢，因为真相在主机那边，这边只是跟着改写。
    */
-  _pendingAdd: function (text, images, state, message) {
+  _pendingAdd: function (text, images, state, message, queueId) {
     var item = {
       key: 'q' + this._counter++,
       text: text,
       images: images,
       state: state,
       message: message || '',
+      queueId: queueId || '',
     }
     this.setData({ pending: this.data.pending.concat([item]) })
     if (wx.vibrateShort) wx.vibrateShort({ type: 'light' })
@@ -1618,7 +1622,72 @@ Page({
   _pendingTake: function () {
     if (!this.data.pending.length) return
     this.setData({ pending: this.data.pending.slice(1) })
+  },  /**
+   * 主机排队条的真快照（双向同步的"同步"那一半）。
+   *
+   * 三条决定：
+   * 1. **整体替换**：手机这一份是镜子，不是第二个队列。本地增删一条
+   *     就会出现主机那头没有、手机这头消不掉的幽灵。
+   * 2. **key 用 queueId**：删除要对得上主机那一条，用主机给的号才不会错位。
+   * 3. 别的内容不动：快照本身就是全量，替换即最终态。
+   */
+  _onQueue: function (p) {
+    var items = p.items || []
+    var out = []
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i]
+      out.push({
+        key: it.queueId,
+        queueId: it.queueId,
+        text: it.text || '',
+        state: it.state,
+        message: it.message || '',
+        images: it.images || 0,
+        files: it.files || 0,
+      })
+    }
+    this.setData({ pending: out })
   },
+
+  /**
+   * 删除一条排队消息（2026-10-05 用户：手机要能删）。
+   *
+   * **host 说删不掉就照实说**：已经发出去的在跑，撤不回来（agent 的 inbox
+   * 不归我们管）。这时候照原样留着 + 提示，而不是假装删掉了。
+   */
+  onDropQueued: function (e) {
+    var key = e.currentTarget.dataset.key
+    var self = this
+    var list = this.data.pending || []
+    var hit = null
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === key) hit = list[i]
+    }
+    if (!hit) return
+    // 主机还扣着的才需要问主机；失败的那条本机就能删
+    if (hit.state !== 'held') {
+      if (hit.state === 'failed') {
+        this.setData({
+          pending: list.filter(function (x) {
+            return x.key !== key
+          }),
+        })
+        return
+      }
+      wx.showToast({ title: '已经发给主机在跑了，撤不回来', icon: 'none' })
+      return
+    }
+    this.client.dropQueued(this.data.sessionId, hit.queueId).then(function (r) {
+      if (r && r.ok) return
+      // 主机不答应：多半是它已经开始跑了。照实说，别把本地那条删掉
+      wx.showToast({
+        title: String((r && r.message) || '这条删不掉').slice(0, 40),
+        icon: 'none',
+      })
+    })
+  },
+
+
 
   /** 会话空下来：把没收下的那几条重发一遍（主机那边从没收到过它们）。 */
   _pendingRetry: function () {
