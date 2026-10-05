@@ -155,19 +155,19 @@
           <view class="sess-bar {{item.badgeTheme}}"></view>
 
           <view class="sess-main">
-            <!-- 标题独占一行（2026-10-05 用户：项目标签要新增一行，不要放在右边）。
-                 以前 chip 挤在标题右边，标题被 chip 和右侧徽标夹在中间，
-                 长标题只剩一两个字的可见宽度——项目名反而读不出来。
-                 现在标题拿满宽度，chip 自己一行。 -->
+            <!-- 标题独占一行（项目名挪到右上角之后，标题左边这一列不再有 chip 抢宽度） -->
             <view class="sess-title ellipsis">{{item.title}}</view>
-            <!-- chip 单独一行，贴着标题下面："属于哪间屋子"是一级信息，
-                 但横向空间让给标题（列表按工作区排序，见 sessions.js 的 sessionRank） -->
-            <view wx:if="{{item.workspaceTag}}" class="sess-tag">{{item.workspaceTag}}</view>
-            <!-- 完整目录弱化在最下面：tag 给短名，这里只是补充 -->
+            <!-- 完整目录弱化在下面：右上角给短名，这里给全路径 -->
             <view class="sess-sub ellipsis">{{item.workspace || item.id}}</view>
           </view>
 
           <view class="sess-right">
+            <!-- 项目名：卡片右上角（2026-10-05 用户：放右上角，像分类卡的角标）。
+                 2026-10-04 在标题右边，10-05 上午改成单独一行，都挤：
+                 一个抢标题宽度，一个把行高撑成三行。
+                 右上角是分类卡的常规位置——眼睛扫过去先看到标题，
+                 项目名在旁边做参照，不再和标题/徽标三方争横向空间。 -->
+            <view wx:if="{{item.workspaceTag}}" class="sess-tag">{{item.workspaceTag}}</view>
             <view class="sess-badge {{item.badgeTheme}}">
               <view wx:if="{{item.running}}" class="pulse"></view>
               <text>{{item.badgeText}}</text>

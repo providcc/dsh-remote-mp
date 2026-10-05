@@ -337,7 +337,10 @@
 
 .sess {
   display: flex;
-  align-items: center;
+  /* align-items:center → flex-start：右列多了一项右上角项目名，
+     整行再居中的话它会被压到徽标上面而不是贴在卡顶。
+     左列（标题+路径）仍靠自己的 padding 保持原来的视觉重量。 */
+  align-items: flex-start;
   padding: 24rpx 24rpx 24rpx 0;
 }
 
@@ -366,29 +369,28 @@
 }
 
 
-/* 标题独占一行（chip 挪下去了，见 wxml 里的说明）。
-   不再需要 flex:1/min-width:0——那两个是当年为了和 chip 挤一行、
-   让标题"可压缩"才加的；现在标题是块级，宽度天然是父容器全宽。 */
+/* 标题独占一行（项目名挪到右上角，标题这一列不再有 chip 抢宽度）。
+
+
 .sess-title {
   font-size: 30rpx;
   line-height: 42rpx;
 }
 
-/* 工作区 tag（2026-10-04）→ 2026-10-05 用户要求挪成单独一行。
-   inline-block 是关键：view 默认 display:block，块级元素的 background
-   会铺满整行，chip 就变成一条满宽的色带而不是一个小方块。
-   ⚠️ 字色用 brand-color-**10** 而不是 text-color-brand：深色表里后者是
-   brand-8（#4582e6），压在 brand-1 的深底上只有 3.56:1，对比度体检不过。
-   brand-10 是两个 theme 各自的极值端（浅底最深 / 深底最亮），两边都过。 */
+/* 项目名：卡片右上角的角标（2026-10-05 用户：放右上角，像分类卡，
+   去掉标签样式、字体再小点）。
+   **底色去掉了**。chip 那种满底方块放在右上角会压出一块色斑，
+   而项目名只是补充信息（完整路径就在标题下面），不该有那种视觉重量；
+   分类卡的角标都是纯文字小号弱化色。
+   2026-10-04 它在标题右边（抢标题宽度），同日上午又改成单独一行
+   （把行高撑成三行），两版都挤——右上角是第三个也是最合适的答案。
+   ⚠️ 颜色用 placeholder 而不是更淡的自定义色：它得能读，只是不该
+   被当成一行内容。 */
 .sess-tag {
-  display: inline-block;
-  margin-top: 8rpx;
-  padding: 2rpx 14rpx;
-  border-radius: 8rpx;
+  margin-bottom: 10rpx;
   font-size: 20rpx;
   line-height: 28rpx;
-  background: var(--td-brand-color-light, #f2f3ff);
-  color: var(--td-brand-color-10, #001a57);
+  color: var(--td-text-color-placeholder, #a0a6b0);
 }
 
 /* 完整目录：有 tag 短名之后它退成补充信息，再小一号 */
@@ -404,6 +406,9 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  /* 项目名与标题第一行对齐：标题 line-height 42rpx、本项目名 28rpx，
+     上下各让 7rpx 才是视觉中线。少了这 7rpx 它明显比标题高半个字。 */
+  padding-top: 7rpx;
 }
 
 .sess-badge {
