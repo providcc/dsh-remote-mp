@@ -390,25 +390,7 @@
   min-width: 0;
 }
 
-/* 项目名：第二行里的描边小胶囊（2026-10-05 用户：项目文字得有样式）。
-   它跟全路径挨着：两个都是"这条会话挂在哪儿"的信息。
-   **描边而不是填色**是刻意的：第一行那颗状态徽标（.sess-badge）是实心
-   填色，这边再同色实心就会被读成同一类东西——用"形"错开，
-   描边=分类，实心=状态。（10-04 那版 chip 用品牌蓝也是为同一个理由。）
-   颜色走 .sess-badge 同一对 token，那两个值已过对比度闸门。
-   圆角 999rpx 跟徽标一致：chip 当年用 8rpx，圆角越小越像按钮，它是标签。 */
-.sess-tag {
-  flex: 0 0 auto;
-  margin-right: 12rpx;
-  padding: 0 14rpx;
-  border: 2rpx solid var(--td-component-border, #e7e7e7);
-  border-radius: 999rpx;
-  font-size: 20rpx;
-  line-height: 28rpx;
-  color: var(--td-text-color-secondary, #5c6470);
-}
-
-/* 第二行：项目名 + 全路径 + 时间。都是次要信息，小一号。 */
+/* 第二行：项目名 + 时间。 */
 .sess-meta {
   display: flex;
   align-items: center;
@@ -416,46 +398,63 @@
   min-width: 0;
 }
 
-/* 全路径：flex:1 吃掉胶囊和时间之外剩下的宽度，min-width:0 让 ellipsis 生效。
-   这一行三项里只有它能被压缩——胶囊是固定内容，时间固定宽度。 */
-.sess-sub {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 20rpx;
-  color: var(--td-text-color-placeholder, #a0a6b0);
-}
-
-
-/* 状态徽标：第一行最右。实心填色——这就是项目名必须用描边的原因。
-   flex:0 0 auto 保证它不被标题压扁（时间戳也同理）。 */
-.sess-badge {
+/* 项目名：品牌色圆点 + 24rpx 深灰文字（2026-10-05 用户：去掉路径只保留项目，
+   强化样式，"不一定要用标签形式"，重新设计）。
+   它改过四轮，都记在这里：
+   - 10-04         标题右边的品牌蓝 chip   -> 抢标题宽度
+   - 10-05 上午    单独一行的 chip        -> 行高撑成三行
+   - 10-05 下午    右上角纯文字           -> 用户：一点样式都没有
+   - 10-05 下午    第二行描边胶囊+全路径   -> 用户：去掉路径、强化、别用标签形
+   这一轮的强化在**字号和字色**，不再靠描边/底色：
+   - 20rpx -> 24rpx：跟时间（20rpx）拉开一档，仍小于标题（30rpx）。
+   - placeholder(#a0a6b0) -> text-color-secondary(#5c6470)：深一档，
+     读得清，但不去抢标题的近黑。
+   - 左侧 12rpx 实心圆点用品牌色，给"这是哪一间屋子"一个视觉锚点。
+     圆点是 CSS 画的（border-radius + background），不用图标字体——
+     这一页一个图标都没有，真机缺字形时会变成空白方块。
+   ⚠️ 不再用胶囊的原因：胶囊把项目名关在方块里，字号顶到 20rpx 就挤。
+      路径去掉后这一行只剩它和时间，横向空间够，文字才吃得下 24rpx。 */
+.sess-project {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  margin-left: 16rpx;
-  font-size: 22rpx;
+  min-width: 0;
+}
+
+.sess-project-dot {
+  flex: 0 0 auto;
+  width: 12rpx;
+  height: 12rpx;
+  margin-right: 12rpx;
+  border-radius: 50%;
+  background: var(--td-brand-color, #0052d9);
+}
+
+/* 名字本身：ellipsis 三件套 + min-width:0 都要，否则长项目名会把时间戳顶掉。
+   （.ellipsis 里已含 min-width:0，这里再写一遍是因为 <text> 作为 flex 子项时，
+    WebKit 某些版本对父级继承来的 min-width 处理不一致——显式写死最稳。） */
+.sess-project-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 24rpx;
   line-height: 32rpx;
-  padding: 2rpx 14rpx;
-  border-radius: 999rpx;
-  background: var(--td-bg-color-secondarycontainer, #f3f3f3);
   color: var(--td-text-color-secondary, #5c6470);
 }
 
-.sess-badge.primary {
-  background: var(--td-brand-color-1, #f2f3ff);
-  color: var(--td-brand-color-on-tint, #0052d9);
-}
-
-.sess-badge.warning {
-  background: var(--td-warning-color-1, #fff1e9);
-  color: var(--td-warning-color-6, #be5a00);
-}
-
-/* 时间：第二行最右。flex:0 0 auto + margin-left 让它死贴右边，
-   路径被截断时它不动。 */
+/* 时间：第二行最右。
+   **margin-left:auto 是关键**：flex 里 auto 外边距会吸走全部剩余空间，
+   把这一项顶到行尾。
+   ⚠️ 全路径（.sess-sub）在的时候靠它的 flex:1 撑开；路径被去掉之后（2026-10-05
+      用户要求），第二行只剩项目名和时间，再没有 flex:1 的项，
+      时间就会紧贴在项目名后面而不是贴右边——那正是本次要修的点。
+   padding-left:20rpx 保证空间被挤满时两者仍有余距（auto margin 会缩到 0，
+   但 padding 不会）。 */
 .sess-time {
   flex: 0 0 auto;
-  margin-left: 12rpx;
+  margin-left: auto;
+  padding-left: 20rpx;
   font-size: 20rpx;
   color: var(--td-text-color-placeholder, #a0a6b0);
 }

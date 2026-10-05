@@ -171,15 +171,21 @@
                 <text>{{item.badgeText}}</text>
               </view>
             </view>
-            <!-- 第二行：项目名 + 完整路径 + 时间。
-                 [项目名] 是**描边**小胶囊（2026-10-05 用户：项目文字得有样式）。
-                 描边而不是填色是刻意的：第一行那颗状态徽标是实心填色，
-                 这边再同色实心就会被读成同一类东西——用"形"错开，
-                 描边=分类，实心=状态。
-                 它跟全路径挨着放：两个都是"这条会话挂在哪儿"的信息。 -->
+            <!-- 第二行：项目名 + 时间。
+                 2026-10-05 用户：去掉路径只保留项目标签，强化项目样式，
+                 "不一定要用标签形式"，重新设计。
+                 原来这里是 [描边胶囊] + 全路径 + 时间三样并排。
+                 改成**品牌色圆点 + 24rpx 深灰文字**，不用胶囊：
+                 胶囊是"分类角标"的常规形式，但它把项目名关在小方块里，
+                 字号最大也只到 20rpx。路径去掉之后这一行只剩它和时间，
+                 横向空间够了，所以项目名值得占到 24rpx（跟时间 20rpx
+                 拉开一档，又仍然小于标题 30rpx）。
+                 圆点用 CSS 画，不用图标字体——真机缺字形。 -->
             <view class="sess-meta">
-              <view wx:if="{{item.workspaceTag}}" class="sess-tag">{{item.workspaceTag}}</view>
-              <view class="sess-sub ellipsis">{{item.workspace || item.id}}</view>
+              <view wx:if="{{item.workspaceTag}}" class="sess-project">
+                <view class="sess-project-dot"></view>
+                <text class="sess-project-name ellipsis">{{item.workspaceTag}}</text>
+              </view>
               <view class="sess-time">{{item.updatedAt}}</view>
             </view>
           </view>
