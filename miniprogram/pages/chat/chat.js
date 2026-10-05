@@ -69,6 +69,19 @@ var MAX_BLOCKS = 400
  */
 var MAX_IMAGES = 4
 var IMAGE_QUALITY = 0.6
+/**
+ * 图片的字节预算（压缩**之后**的原始字节数，不含 base64 的 4/3 膨胀）。
+ *
+ * 为什么是这两个数：整条载荷是 JSON，图片只能 base64 进门；而中继那条连接有
+ * 1MB 的硬帧上限（`DRC_MAX_MSG_BYTES`），超了不是发不出去，是整条帧被掐、
+ * socket 1009 断开——用户看到的是莫名掉线，比一条清楚Toast 难查得多。
+ * 600KB 总量 ≈ base64 800KB，加上其余字段与密文封装仍在 1MB 之内。
+ *
+ * ⚠️ Android 上 `compressImage` 的 quality 被系统忽略（见上面 IMAGE_QUALITY 的注释），
+ * 所以这道闸在 Android 上更容易被触发——触发时就明说，别让用户以为选图坏了。
+ */
+var MAX_IMAGE_BYTES = 300 * 1024
+var MAX_IMAGE_TOTAL_BYTES = 600 * 1024
 var MAX_TEXT_PER_BLOCK = 20000
 var DELTA_FLUSH_MS = 100
 var DELTA_FLUSH_CHARS = 4096
@@ -1529,7 +1542,18 @@ Page({
     })
   },
 
-  /** 逐张压缩 → 读成 base64。压缩失败不挡路：原图也能发（体积的事用户自己能看）。 */
+  /**
+   * 逐张压缩 → 读成 base64。
+   *
+   * 2026-10-05 用户报"选图片都是提示这张图读不出来"。根因一句话：`wx.chooseMedia`
+   * 回来的是 **`tempFilePath`**，而这里读的是 `f.path`——那个字段从来不存在，
+   * 于是 `src` 是 undefined，compressImage 失败、退回的也还是 undefined，readFile
+   * 再失败，每张图都走"读不出来"。e2e 的假 wx 当时也照着错代码写成 `path`，
+ * 所以 32 项单测一直是绿的（假实现与真 API 分叉，最难发现的一类）。
+   * 现在的假 wx 按真 API 给 `tempFilePath`，并且在路径为空时**照真的那样失败**。
+   *
+   * 压缩失败不挡路：原图也能发（体积的事有下面的预算兜着）。
+   */
   _compressPicked: function (files) {
     var self = this
     var out = []
@@ -1540,30 +1564,53 @@ Page({
         return
       }
       var f = files[i++]
+      var picked = f.tempFilePath
       wx.compressImage({
-        src: f.path,
+        src: picked,
         quality: IMAGE_QUALITY,
         success: function (c) {
           self._readAsBase64(c.tempFilePath, f, out, next)
         },
         fail: function () {
-          self._readAsBase64(f.path, f, out, next)
+          self._readAsBase64(picked, f, out, next)
         },
       })
     }
     next()
   },
 
-  _readAsBase64: function (path, meta, out, done) {
+  _readAsBase64: function (path, meta, out, done, self) {
+    if (!self) self = this
     wx.getFileSystemManager().readFile({
       filePath: path,
       encoding: 'base64',
       success: function (r) {
+        var base64 = String(r.data || '')
+        // 体积预算：整条载荷是 JSON，图片只能 base64 进门（协议里的
+        // imageAttachment 就是这么定的，主机那头没有这个文件）。而中继那条
+        // 连接有 1MB 的硬帧上限——超了不是"发不出去"，是**整条帧被掐、
+        // socket 1009 断开**，用户看到的是莫名掉线。所以在进 attachments
+        // 之前就按字节数把关，超了明说，不偷偷带上车。
+        var bytes = Math.floor((base64.length * 3) / 4)
+        var already = 0
+        for (var k = 0; k < self.data.attachments.length; k++) {
+          already += Math.floor((self.data.attachments[k].data.length * 3) / 4)
+        }
+        for (var m = 0; m < out.length; m++) {
+          already += Math.floor((out[m].data.length * 3) / 4)
+        }
+        if (bytes > MAX_IMAGE_BYTES || already + bytes > MAX_IMAGE_TOTAL_BYTES) {
+          var kb = Math.round(bytes / 1024)
+          var budget = Math.round(MAX_IMAGE_TOTAL_BYTES / 1024)
+          wx.showToast({ title: '这张图压完还有 ' + kb + 'KB 超过一条消息 ' + budget + 'KB 的预算', icon: 'none' })
+          done()
+          return
+        }
         out.push({
           name: 'img-' + Date.now() + '-' + out.length + '.jpg',
           // path 只在本机显示用（回显缩略图）；**不上线**（ sendPrompt 只映射 wire 要的字段）
           path: path,
-          data: String(r.data || ''),
+          data: base64,
           width: meta.width,
           height: meta.height,
         })
