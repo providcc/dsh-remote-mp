@@ -1504,7 +1504,14 @@ Page({
     this.setData({ queueOpen: !this.data.queueOpen })
   },
 
-  // ── 图片附件：加号 → 相册（拍照与文件这一代先不做，话在动作条里说明白）───
+  // ── 图片附件：加号 → 相册（拍照与文件这一代先不做）───
+  /**
+   * 点加号直接开相册。
+   *
+   * 2026-10-05 用户拍板：原来先弹一张单选项 action sheet（"图片（从相册选）"），
+   * 括号里的说明正是用户点名不要的；而这一代只有图片一种附件，中间那一屏不解释
+   * 任何事、只多一次点击。条数上限的提示留着。
+   */
   onAttach: function () {
     var self = this
     var room = MAX_IMAGES - this.data.attachments.length
@@ -1512,18 +1519,12 @@ Page({
       wx.showToast({ title: '一条消息最多带 ' + MAX_IMAGES + ' 张图', icon: 'none' })
       return
     }
-    wx.showActionSheet({
-      itemList: ['图片（从相册选）'],
-      success: function (res) {
-        if (res.tapIndex !== 0) return
-        wx.chooseMedia({
-          count: room,
-          mediaType: ['image'],
-          sizeType: ['compressed'],
-          success: function (r) {
-            self._compressPicked(r.tempFiles || [])
-          },
-        })
+    wx.chooseMedia({
+      count: room,
+      mediaType: ['image'],
+      sizeType: ['compressed'],
+      success: function (r) {
+        self._compressPicked(r.tempFiles || [])
       },
     })
   },
