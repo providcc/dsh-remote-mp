@@ -245,7 +245,9 @@ Page({
           sessions: [],
           hiddenArchived: 0,
           hiddenText: '',
-          manualOpen: true,
+          // **不自动展开手动输入**（2026-10-05 用户：全部场景默认收起）。
+          // 原来这里写死 manualOpen:true，于是"解配后重新连"必然顶开一整片
+          // 输入控件——用户说的就是这条。
         })
         wx.showToast({ title: String(evt.text || '会话已失效，请重新扫码配对').slice(0, 40), icon: 'none' })
       }
@@ -358,10 +360,10 @@ Page({
    */
   onScan: function () {
     if (!env.probe().scanCode) {
-      this.setData({ manualOpen: true })
+      // 不自动展开（2026-10-05 用户：默认收起）。说清去哪儿点，让用户自己展开。
       wx.showModal({
         title: '当前环境无法扫码',
-        content: '这个运行环境没有提供扫码能力。请把主机显示的「二维码内容」粘贴到下面的输入框。',
+        content: '这个运行环境没有扫码能力。请点下面的「手动输入」，把主机显示的「二维码内容」粘进去。',
         showCancel: false,
       })
       return
@@ -479,8 +481,8 @@ Page({
       this.client.connect({ server: parsed.server, psk: parsed.psk, token: parsed.token })
       return
     }
-    this.setData({ manualOpen: true })
-    wx.showToast({ title: '已读取密钥，请输入配对码', icon: 'none' })
+    // 不自动展开（2026-10-05 用户：默认收起）；说清去哪儿输入。
+    wx.showToast({ title: '已读取密钥，请点「手动输入」填配对码', icon: 'none' })
   },
 
   onTokenInput: function (e) {
