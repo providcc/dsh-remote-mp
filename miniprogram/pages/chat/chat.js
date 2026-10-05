@@ -347,6 +347,8 @@ Page({
     this._renderBar()
     this.client.listSessions()
     this._maybeLoadHistory()
+    // 排队是「以 dsh 为准」：进会话/回前台主动问一次，别等主机恰好有变化。
+    this._pullQueue()
   },
 
   /**
@@ -1632,7 +1634,15 @@ Page({
    * 3. 别的内容不动：快照本身就是全量，替换即最终态。
    */
   _onQueue: function (p) {
-    var items = p.items || []
+    this._applyQueue(p.items || [])
+  },
+
+  /**
+   * 主机回执里的 items 与 ev.queue 里的 items 是**同一个形状**（同一个
+   * queueSnapshot 产出），所以只映射一次，两条路径共用。
+   * 本地不做增删：手机上的排队条永远是主机给的整份，不自己猜。
+   */
+  _applyQueue: function (items) {
     var out = []
     for (var i = 0; i < items.length; i++) {
       var it = items[i]
@@ -1647,6 +1657,27 @@ Page({
       })
     }
     this.setData({ pending: out })
+  },
+
+  /**
+   * 主动问主机要当前排队（2026-10-05 用户实测第三点：进会话看不到排队）。
+   *
+   * **为什么每次 onShow 都要问**：ev.queue 只在状态变化时被动推送，而进会话、
+   * 切回前台、刚重连这三个时刻主机什么都没发生，不问就是空的。
+   * 问不到（未配对 / 离线 / 老主机不认识这条命令）就静默失败——那时 pending
+   * 保持原样，ev.queue 到了照样会覆盖，不该在这里清空。
+   */
+  _pullQueue: function () {
+    if (!this.client.isPaired() || this.client.status !== 'online') return
+    if (!this.data.sessionId) return
+    var self = this
+    this.client.getQueue(this.data.sessionId).then(function (r) {
+      if (!r || r.ok !== true) return
+      var d = r.data || {}
+      self._applyQueue(d.items || [])
+    }).catch(function () {
+      /* 拉不到就等 ev.queue，不给用户一个错误弹窗 */
+    })
   },
 
   /**

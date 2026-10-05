@@ -400,6 +400,21 @@ class DrcClient {
   }
 
   // ── 页面用的便捷指令 ──────────────────────────────────────────────
+  /**
+   * 问主机「这条会话现在排着几条」。
+   *
+   * **为什么必须有它**（2026-10-05 用户实测：mp 端进入会话看不到当前排队）：
+   * ev.queue 是**被动推送**，只在状态变化时才有。进会话、切回前台、刚重连这三个
+   * 时刻主机什么都没发生，于是没有任何一帧会来——不是同步慢，是没有触发点。
+   * 所以每次 onShow 都主动问一次，主机立刻回全量。这就是「以 dsh 为准」。
+   */
+  getQueue(sessionId) {
+    return this.sendCmd({
+      t: 'cmd.get_queue',
+      cmdId: this.newCmdId(),
+      sessionId: sessionId,
+    })
+  }
   listSessions() {
     return this.sendCmd({ t: 'cmd.list_sessions', cmdId: this.newCmdId() })
   }
