@@ -166,8 +166,16 @@
             <!-- 第一行：标题 + 状态。两者都是"这条现在怎么了"，放一行。 -->
             <view class="sess-head">
               <view class="sess-title ellipsis">{{item.title}}</view>
+              <!-- 状态徽标：第一行最右。
+                   **里面不放脉冲点**（2026-10-05 用户：一行两个点看起来有点怪）。
+                   原先这里有一颗 10rpx 闪烁圆点 + 文字，而第二行项目名左侧
+                   也有一颗 12rpx 品牌色圆点——两颗点挨着两行，重复又晃眼。
+                   徽标本身有填色（primary 蓝 / warning 橙 / 默认灰），
+                   颜色已经说清状态，不必再靠一颗点强调。
+                   会话列表里的 .pulse 规则随之删掉（没有 wxml 再引用它）。
+                   @keyframes dot-blink 仍留在 app.wxss——聊天页的在跑圆点
+                   和顶栏的连接点都在用它，是共享的。 -->
               <view class="sess-badge {{item.badgeTheme}}">
-                <view wx:if="{{item.running}}" class="pulse"></view>
                 <text>{{item.badgeText}}</text>
               </view>
             </view>
