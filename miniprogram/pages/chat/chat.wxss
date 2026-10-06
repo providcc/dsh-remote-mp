@@ -764,16 +764,34 @@
 /* 回到最新（2026-10-05 用户：换个位置、小一点、颜色不要这么明显）。
  *
  * 三处都是因为它在**正文上面**，而正文才是这一页要读的东西：
- *   位置 贴到右边缘、压到输入区那一带。原来浮在消息区中段，
- *        正好盖住用户正在看的那几行。
  *   大小 72rpx -> 56rpx。它是一个「以防万一」的控件，不该比正文更抢眼。
  *   颜色 品牌色实心圆 -> 中性面 + 细边 + 次级文字色。离线/未配对都不该报警，
  *        这一颗同理：它没有紧急性，亮品牌色是在假装它紧急。
+ *
+ * 位置（2026-10-06 用户拍板：「改到中间，不要与输入文本框重叠，往上一点」）：
+ *
+ * **用 fixed，不用 absolute。** 这一条不是风格选择，是**修 bug**：
+ * 原来锚在 `.chat-wrap`（position: relative + height:100%）上。如果这台设备上
+ * `height:100%` 没解析成功（祖先 `page{height:100%}` → body 高度 auto），
+ * 定位祖先就退化成"内容高度"，`bottom` 按那一大块内容量——内容长时按钮跑出屏幕，
+ * 内容短时正好落在屏幕中部。**用户报的现象正是"移动到中间"**（2026-10-06）。
+ * 本页无任何祖先 transform（grep 过：只有 .jump-arrow / .hist / 一处 rotate，
+ * 都不是祖先），所以 fixed 不会遇到"transform 生成 containing block"那类漂移，
+ * 锚点稳定落在视口上。
+ *
+ * 46% 而不是 50%：往上偏一点，避开顶栏，也让"手指够得着"的区域更靠中间。
+ * 不与输入区重叠是**结构性保证**而非巧合——输入区高 122rpx + env(safe-area-inset-bottom)
+ * （.composer 的 padding 16/16+inset + .composer-pill 88rpx + 2rpx 边），
+ * 而 46% 的视口高在一切现实机型上都远大于它：输入区要占到视口 46% 需要屏幕矮到约 210px。
+ * 旧值 176rpx（restyle 4656d70 从 210rpx 改过来）就**不满足**这条：iPhone home
+ * indicator(68rpx) 时沉进输入区 13rpx，Android 48dp 手势条(96rpx) 时沉 41rpx、
+ * 正好压在输入框那一行上——而它 z-index:10 且 DOM 里晚于 .composer，重叠区点到的
+ * 会是按钮而不是输入框。判据见 mp-probe 的 fab 不重叠那条。
  */
 .jump {
-  position: absolute;
+  position: fixed;
   right: 12rpx;
-  bottom: 176rpx;
+  bottom: 46%;
   z-index: 10;
   width: 56rpx;
   height: 56rpx;

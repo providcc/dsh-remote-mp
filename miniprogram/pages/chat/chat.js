@@ -314,6 +314,8 @@ Page({
     this._SCROLL_REBOUND_MS = SCROLL_REBOUND_MS
     this._programmaticUntil = 0
     this._scrollH = 0
+    /** 最近一次真实滚动到的位置。「回到最新」要靠它判断"还在往底部走还是用户在回拖"。 */
+    this._scrollTop = 0
     this._draining = false
     this._historyBusy = false
     this._historyStarted = false
@@ -405,6 +407,9 @@ Page({
     var d = e.detail || {}
     var h = this._scrollH
     if (!h || typeof d.scrollHeight !== 'number') return
+    // 记住当前位置：「回到最新」要知道自己是**从哪儿**开始滚的（见 onJumpLatest）。
+    // 只在这一处写，所以它始终是最近一次真正滚动到的位置。
+    if (typeof d.scrollTop === 'number') this._scrollTop = d.scrollTop
 
     // **默认永远跟底**（2026-10-05 用户：「以滑动底部作为默认行为……避免场景确实导致不跟滑」）。
     //
@@ -429,8 +434,20 @@ Page({
     }
     // 自作自滚的尾帧回弹：屏幕滚到底了但 deltaY 还是负的那一帧。
     // 它不代表用户想回看，不能因此停跟。
-    if ((d.deltaY || 0) < 0 && Date.now() < (this._programmaticUntil || 0)) {
-      return
+    //
+    // **向下滚的程序滚动也要豁免**（2026-10-06 取证）。原来这一条只挡 deltaY<0，
+    // 而 `onJumpLatest` 触发的是**向下**的滚动（deltaY>0）：于是每一帧中间帧
+    // （还没真的到底）都把 atBottom 打回 false，「回到最新」那颗按钮就在自己的
+    // 滚动途中**反复挂载/卸载**——渲染层实测 11 个中间帧里有 7 帧重新出现，
+    // 其中两帧正在播 jump-in 的 scale，肉眼是「啪一下又冒出来」。
+    //
+    // 判据不用「纯时间窗」而是**位置**：窗口内且 scrollTop 没有回退到起点之上，
+    // 说明它还在往底部走，那就是我们自己滚的。纯时间窗会把用户在 600ms 内
+    // 的真回看也吃掉（4656d70 刻意把窗口收窄过一次，别退回去）。
+    if (Date.now() < (this._programmaticUntil || 0)) {
+      var dy = d.deltaY || 0
+      if (dy < 0) return
+      if (dy >= 0 && d.scrollTop >= (this._programmaticFromTop || 0) - this._SCROLL_BOTTOM_SLOP) return
     }
     if (this._autoScroll) {
       this._autoScroll = false
@@ -449,6 +466,8 @@ Page({
     this._autoScroll = true
     // 落底回弹的尾帧会是负 delta：给一个短窗口让它别把刚接上的跟随又关掉
     this._programmaticUntil = Date.now() + this._SCROLL_REBOUND_MS
+    // 起点：onScroll 里用来判断「还在往底部走还是用户在往回拖」（见 onScroll 那条注释）
+    this._programmaticFromTop = this._scrollTop || 0
     this.setData({ atBottom: true })
     this._scrollToBottom()
   },
@@ -521,6 +540,18 @@ Page({
         this._wasOffline = false
         this._historyStarted = false
         this._historyBusy = false
+        // **复位之后必须自己再触发一次**（2026-10-06 取证）。
+        //
+        // 开头那次 `_maybeLoadHistory()` 在这一刻还看到 `_historyStarted === true`，
+        // 直接 return 了——而它全页只有两个调用点（onShow 与这里），不重新触发
+        // 就**永远不会再读历史**。2026-10-05 那次"修复"只复位、不触发，整段是
+        // 彻底的空操作：断链期间主机上跑完的步骤、工具、回复一条都补不回来，
+        // 而主机重连后也只会发 resync（mp 按设计不处理它，docs/DESIGN.md:333），
+        // 于是页面活着、顶栏亮着，**消息流从此静止**。
+        //
+        // 此刻三个前置条件全满足：status 已是 'online'、_historyStarted 刚复位、
+        // _historyBusy 刚复位。
+        this._maybeLoadHistory()
         // 断了多久不知道，但主机那边的会话状态一定变了 —— 顶栏那个
         // 「运行中」要重新问一次，否则它会一直停在上一次的值上。
         this.client.listSessions()
@@ -665,8 +696,20 @@ Page({
    * 实时帧后到，后到者胜（反过来：历史第一页先落地、实时帧随后到，也自然胜出）。
    */
   _onTodo: function (p) {
+    // **没有真数据就不许锁死历史回放**（2026-10-06 取证）。
+    //
+    // `_todoLive` 是一条单向闩锁：置真之后全页再不复位，而 chat.js 的历史落地
+    // 处有 `if (first && self._replayTodos && !self._todoLive)` 这道守卫。
+    // 原实现在这里**无条件**置真，于是任何一帧形状不对的帧（p.todos 不是数组）
+    // 都会把历史回放永久关掉——而那一帧同时还把清单清成了空的，条子也就没了。
+    //
+    // 形状不对 = 这一帧没有真数据，后到者胜这条规则无从谈起，不该由它裁决。
+    if (!Array.isArray(p.todos)) return
+    // 注意：**空数组照样置真**。内核跑完一轮会把清单清空并照发一帧空数组
+    // （host 侧注释明写"空数组也发"），那是真实的"此刻清单为空"，用户拍板
+    // 语义就是取最后一份——所以这里不能把它当成"没数据"。
     this._todoLive = true
-    this._setTodos(Array.isArray(p.todos) ? p.todos : [])
+    this._setTodos(p.todos)
   },
 
   onToggleTodos: function () {
