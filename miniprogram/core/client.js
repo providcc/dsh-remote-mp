@@ -291,6 +291,12 @@ class DrcClient {
       return false
     }
     var nonce = store.nextNonceFor(this._resume)
+    // null = 这一次的 nonce 没能安全落盘（存储写失败）。**不许发**：发了就有可能在重启后
+    // 复用同一个 nonce，而那是密钥流复用。宁可这次指令失败，也不要一条看不见的密码学退化。
+    if (!nonce) {
+      this.emit({ kind: 'error', message: '本地存储写不进去，不能安全地发这条（请重新扫码配对）' })
+      return false
+    }
     var rec = codec.seal(this.kC2H, cmd, nonce)
     return this.sendControl({
       t: 'enc',

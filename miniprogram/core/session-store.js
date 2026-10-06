@@ -107,11 +107,29 @@ function clearPairing() {
 
 /**
  * 会话内单调递增的 nonce（持久化：app 重启不能在同一 key 下重复 nonce）。
+ *
+ * ## 落盘失败就**不再给 nonce**（2026-10-06 审计）
+ *
+ * 原来这里 `savePairing(pairing)` 的返回值被丢掉了，于是"写不进盘"这条路没有任何人看见：
+ * 内存里的计数器往前走了，盘上的还停在旧值 → app 一重启，计数器从旧值接着数
+ * → **同一个 key 下重复 nonce** → 密钥流复用。而这正是本函数头一句注释承诺的不变量。
+ *
+ * 现在写失败就返回 `null`，调用方**拒绝发送**——与插件侧同一条纪律
+ * （`transport/relay.ts` 的 `sendCmd`：缺 `_resume` 就拒绝，宁可失败也不复用 nonce）。
+ * 宁可用户看见"存储写不进去、请重新扫码"，也不要一条看不见的密码学退化。
+ *
+ * 写失败现实吗：微信存储有配额，`setStorageSync` 在配额满或宿主异常时会返回失败。
+ * 平时碰不到，但这条路径一旦发生就是**静默**的密码学退化，代价与触发概率不成比例。
+ *
+ * @returns {Uint8Array|null} null = 这一次的 nonce 没能安全落盘，**不许发**。
  */
 function nextNonceFor(pairing) {
   var c = Number(pairing.nonceCounter || 0) + 1
   pairing.nonceCounter = c
-  savePairing(pairing)
+  if (!savePairing(pairing)) {
+    pairing.nonceCounter = c - 1 // 内存也别往前推：这一条发不出去，计数必须原地不动
+    return null
+  }
   var prefix = codec.noncePrefix(pairing.psk, pairing.convId, installId())
   return codec.buildNonce(prefix, c)
 }
