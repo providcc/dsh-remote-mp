@@ -245,6 +245,27 @@
   color: var(--td-text-color-placeholder);
 }
 
+/* ── 瞬时提示（重试 / 压缩）────────────────────────────────────────────
+   顶栏下一行的一句小字：只在"这一轮"里有意义，run-state 回到 idle 就清掉。
+   样式刻意比待办条更轻 —— 它是状态不是内容：次容器底色 + placeholder 文字，
+   品牌色一个都不用（品牌色只出现在"要点的东西"上，这行不可点）。
+   没有提示时整块不渲染（wxml 的 wx:if），不占地方。 */
+.notice {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 12rpx 24rpx;
+  background: var(--td-bg-color-secondarycontainer);
+  border-bottom: 2rpx solid var(--td-component-border);
+}
+
+.notice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 22rpx;
+  color: var(--td-text-color-placeholder);
+}
+
 .bar-stop {
   flex: 0 0 auto;
   width: 56rpx;

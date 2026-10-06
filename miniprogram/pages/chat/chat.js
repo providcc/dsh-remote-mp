@@ -242,6 +242,15 @@ Page({
     barText: '',
     barTheme: 'default',
     /**
+     * 瞬时提示（顶栏下一行，`ev.retry` / `ev.compaction` 落在这里）。
+     *
+     * 为什么是"一行字"而不是进块流：重试与压缩都是**进行中状态**，
+     * 不是会话内容 —— 进块流会永久留在历史里，而"正在重试 2/5"这种话
+     * 半小时后再看毫无意义。run-state 回到 idle 时清掉（见 _onRunState）。
+     * `failed` 与 `ended` 是两件事（见 _onCompaction），绝不合并。
+     */
+    notice: '',
+    /**
      * 当前模型（`ev.model` 的原始字段）。**只读，不假装能切。**
      *
      * 这一代主机内核的 `agentDefaultModel` 上只有 `currentSelection`
@@ -590,6 +599,14 @@ Page({
       wx.showToast({ title: '主机在另一条会话里提问', icon: 'none' })
       return
     }
+    // 审批与提问同一性质："不回就等于出事"的帧（主机阻塞等决定，180 秒超时自动拒绝）。
+    // 提问那句上面有了，这里补审批的对称处理 —— 不弹卡（那张卡属于别的会话），
+    // 但必须让人知道有这件事。原来审批跨会话是**彻底静默**（连提问那句 toast 都没有），
+    // 主机白等 180 秒而手机毫无痕迹（PRODUCT.md G2）。
+    if (p.t === 'ev.permission_request' && p.sessionId && p.sessionId !== this.data.sessionId) {
+      wx.showToast({ title: '主机在另一条会话里等审批', icon: 'none' })
+      return
+    }
     if (p.sessionId && p.sessionId !== this.data.sessionId) return // 不是本会话
 
     // 老主机的 ev.model 不带 sessionId（那时它就是全局的）：只在**本会话确实还没
@@ -598,21 +615,6 @@ Page({
       if (p.sessionId || !this.data.modelName) this._onModel(p)
       return
     }
-    // 提问是**唯一一种"不回就等于出事"的帧**（2026-10-06 取证）。
-    //
-    // 现场：10:16:12 主机问了个真问题（2 道题），10:21:30 被桌面答掉。
-    // 期间手机端整段时间什么都没有——不是"闪一下被撤卡"，是没出现过。
-    // 而提问卡的结构是「一次性、单会话、只在 chat 页、永不重放」，所以用户在
-    // 别的会话时，上面那句会话过滤会把它**无声吞掉**。
-    //
-    // 静默是最坏的处理：主机那边正阻塞着等回答（问答超时要 300s），
-    // 手机上却毫无痕迹，用户只会以为"它没问我"。所以这里给一句提示——
-    // 不弹卡（那张卡属于别的会话），但**必须让人知道有这件事**。
-    if (p.t === 'ev.question_request' && p.sessionId && p.sessionId !== this.data.sessionId) {
-      wx.showToast({ title: '主机在另一条会话里提问', icon: 'none' })
-      return
-    }
-    if (p.sessionId && p.sessionId !== this.data.sessionId) return // 不是本会话
 
     // 会话列表是"这条会话此刻在不在跑"的权威来源。这一页原来完全没看它，
     // 于是从列表点进一条**正在跑**的会话时，顶栏会一直显示"空闲"，
@@ -629,6 +631,10 @@ Page({
     // 排队快照（2026-10-05 用户：排队要双向同步）。主机是唯一的真相源，
     // 这里整体替换——不在本地增删，本地增删就又变回一份猜的队列。
     if (p.t === 'ev.todo') return this._onTodo(p)
+    // 重试与压缩的瞬时提示（主机 2.0.11 已发，见 _onRetry / _onCompaction）。
+    // 与其它事件走同一句会话过滤（上面的通用过滤）：别的会话在重试不关这一页的事。
+    if (p.t === 'ev.retry') return this._onRetry(p)
+    if (p.t === 'ev.compaction') return this._onCompaction(p)
     if (p.t === 'ev.result') {
       if (!p.ok && p.message) wx.showToast({ title: String(p.message).slice(0, 40), icon: 'none' })
       return
@@ -1199,6 +1205,39 @@ Page({
     })
   },
 
+  // ── 重试 / 压缩的瞬时提示 ──────────────────────────────────────────
+  /**
+   * 模型正在重试（`ev.retry` ← 内核 `llm/retry`）。
+   *
+   * 现场：模型卡住 → 用户以为死了 → 手动去中断，而宿主其实正在重试。
+   * 文案与其它事件同一条会话过滤之后才到这里（分发处），
+   * 所以这里只管拼人话：`正在重试 2/5 · TRANSPORT`。
+   * 清除时机：run-state 回到 idle（见 _onRunState），或被下一条提示覆盖。
+   */
+  _onRetry: function (p) {
+    var attempt = typeof p.attempt === 'number' && p.attempt > 0 ? p.attempt : 1
+    var max = typeof p.max === 'number' && p.max > 0 ? p.max : attempt
+    var text = '正在重试 ' + attempt + '/' + max
+    if (p.reason) text += ' · ' + String(p.reason).slice(0, 40)
+    this.setData({ notice: text })
+  },
+
+  /**
+   * 上下文压缩的起止（`ev.compaction` ← 内核 `compaction/start|end`）。
+   *
+   * `failed` 与 `ended` **绝不合并**：前者是"压缩没成"（真机见过
+   * `summarization produced no text summary content`），上下文已经烂掉；
+   * 合并成一个 ended 会让用户在出事的情况下以为一切正常。
+   * `ended` 当场清掉（压缩结束了，没什么好说的）；`failed` 留下原因，
+   * 等 run-state 回到 idle 时再清（见 _onRunState）。
+   */
+  _onCompaction: function (p) {
+    if (p.state === 'started') this.setData({ notice: '正在压缩上下文' })
+    else if (p.state === 'failed')
+      this.setData({ notice: '压缩没成功：' + String(p.error || '未知原因').slice(0, 60) })
+    else this.setData({ notice: '' })
+  },
+
   // ── 审批 / 提问 ───────────────────────────────────────────────────
   /**
    * 一次审批请求。
@@ -1348,7 +1387,12 @@ Page({
     // 这条帧是"挂着的审批/提问已经作废"的唯一信号（只有 running/idle 会发），
     // 所以收起卡片的同时必须停掉那个还在走的表，否则它会一直 setData 到天荒地老。
     if (this.data.pendingPermission || this.data.pendingQuestion) this._stopCardTick()
-    this.setData({ running: running, pendingPermission: null, pendingQuestion: null })
+    // 瞬时提示（重试/压缩）只在"这一轮"里有意义：回到 idle 说明这一轮结束了，
+    // 留着"正在重试 2/5"会让用户以为下一轮还没开始。压缩失败那句也在这里清 ——
+    // 它在失败那一刻已经说过那句话，idle 时再挂着就是在说一件过去的事。
+    var patch = { running: running, pendingPermission: null, pendingQuestion: null }
+    if (!running && this.data.notice) patch.notice = ''
+    this.setData(patch)
     if (running) {
       this._startThinkTick()
       blocks = this._ensureThinkOpen(blocks)

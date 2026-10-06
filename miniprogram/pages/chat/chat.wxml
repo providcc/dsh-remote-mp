@@ -21,6 +21,14 @@
     <text wx:if="{{modelName}}" class="bar-model ellipsis">{{modelName}}</text>
   </view>
 
+  <!-- 瞬时提示（重试 / 压缩，见 chat.js 的 notice）。
+       只在"这一轮"里有意义的一行字：run-state 回到 idle 就清掉，
+       不进块流（半小时后再看"正在重试 2/5"毫无意义）。
+       没有提示时整块不占地方。 -->
+  <view wx:if="{{notice}}" class="notice">
+    <text class="notice-text ellipsis">{{notice}}</text>
+  </view>
+
   <!-- 待办条（todo list）。做在**顶部**是用户定的位：它是"这一轮在干什么"的索引，
        混进消息流会和步骤组互相踩；而排队消息在底部输入区上方，两边天然不打架。
        默认收起只报进度（2/5），点一下展开全文，点消息区任意处自动收回 ——
