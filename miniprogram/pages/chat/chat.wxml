@@ -316,13 +316,14 @@
   </scroll-view>
 
   <!-- 用户往上回看过：给一条回到最新的路，但不打扰他。
-       有审批/提问浮层时它让位 —— 两者都浮在输入区上方，不让位就会压在一起。
+       有审批/提问浮层或附件行时它让位 —— 都浮在输入区上方，不让位就会压在一起。
+       （附件行 .attach 就在输入区正上方，按钮按输入区高度定位，两者重叠。）
        2026-10-04 用户要求换个时兴样式：从「居中灰药丸 + 圆点 + 文字」改成
        **右下角品牌色悬浮圆钮 + CSS 箭头**（IM/微信自己的「回到最新」就是这个形状）：
        不占一行、不挡正文，落底即隐。箭头是两条 border 转 45° 画的，
        不引图标库（这一页目前一个图标组件都没用）。 -->
   <view
-    wx:if="{{!atBottom && !pendingPermission && !pendingQuestion}}"
+    wx:if="{{!atBottom && !pendingPermission && !pendingQuestion && !attachCount}}"
     class="jump"
     hover-class="jump--pressed"
     hover-stay-time="80"

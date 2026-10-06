@@ -789,7 +789,8 @@
  *   颜色 品牌色实心圆 -> 中性面 + 细边 + 次级文字色。离线/未配对都不该报警，
  *        这一颗同理：它没有紧急性，亮品牌色是在假装它紧急。
  *
- * 位置（2026-10-06 用户拍板：「改到中间，不要与输入文本框重叠，往上一点」）：
+ * 位置（2026-10-06 用户拍板：「放在下面，不要垂直居中」——中间那版（bottom:46%）
+ * 看着像屏幕正中长的东西，用户要的是贴在输入区上方）：
  *
  * **用 fixed，不用 absolute。** 这一条不是风格选择，是**修 bug**：
  * 原来锚在 `.chat-wrap`（position: relative + height:100%）上。如果这台设备上
@@ -800,19 +801,17 @@
  * 都不是祖先），所以 fixed 不会遇到"transform 生成 containing block"那类漂移，
  * 锚点稳定落在视口上。
  *
- * 46% 而不是 50%：往上偏一点，避开顶栏，也让"手指够得着"的区域更靠中间。
- * 不与输入区重叠是**结构性保证**而非巧合——输入区高 122rpx + env(safe-area-inset-bottom)
- * （.composer 的 padding 16/16+inset + .composer-pill 88rpx + 2rpx 边），
- * 而 46% 的视口高在一切现实机型上都远大于它：输入区要占到视口 46% 需要屏幕矮到约 210px。
- * 旧值 176rpx（restyle 4656d70 从 210rpx 改过来）就**不满足**这条：iPhone home
- * indicator(68rpx) 时沉进输入区 13rpx，Android 48dp 手势条(96rpx) 时沉 41rpx、
- * 正好压在输入框那一行上——而它 z-index:10 且 DOM 里晚于 .composer，重叠区点到的
- * 会是按钮而不是输入框。判据见 mp-probe 的 fab 不重叠那条。
+ * bottom 按输入区高度算，不按视口百分比：`146rpx + env(safe-area-inset-bottom)` =
+ * 输入区 122rpx（.composer 的 padding 16/16+inset + .composer-pill 88rpx + 2rpx 边）
+ * + 24rpx 间隙。百分比（上一版 46%）的问题是它跟内容无关——在矮屏上往下掉、
+ * 在高屏上飘到中间，用户要的"贴在输入区上方"只有按输入区算才恒成立。
+ * right:24rpx 与输入区左右 padding 对齐。
+ * 有审批/提问卡或附件行时按钮整个不渲染（wxml 的 wx:if），所以这里不用给它们让位。
  */
 .jump {
   position: fixed;
-  right: 12rpx;
-  bottom: 46%;
+  right: 24rpx;
+  bottom: calc(146rpx + env(safe-area-inset-bottom));
   z-index: 10;
   width: 56rpx;
   height: 56rpx;
