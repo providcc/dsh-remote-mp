@@ -232,7 +232,6 @@ Page({
       // 审批与提问同一性质（主机阻塞等决定，180 秒超时自动拒绝），对称处理。
       wx.showToast({ title: '主机在另一条会话里等审批', icon: 'none' })
     } else if (evt.kind === 'status') {
-    } else if (evt.kind === 'status') {
       this._renderStatus(evt.status, evt.text)
       // 配对成功：状态一变，wxml 的 `wx:if` 分支自己就切到会话列表了。
       // 原来在 pair 页要 navigateBack 回首页，现在就在首页，不需要任何跳转。
