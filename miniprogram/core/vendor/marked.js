@@ -8,8 +8,12 @@
  * 为什么依赖它而不是自己写解析器：CommonMark 的边界情况（嵌套强调、未闭合围栏、
  * 引用里的列表、链接的括号配平）手写要几百行且必然漏。它是 MIT、体积小、无 DOM 依赖。
  *
- * ⚠️ 升级 marked 时要重新生成这个文件，并确认 `node scripts/check-marked-vendor.mjs` 通过：
- * 产物里含 `?.` / `||=` / `Array.at()`，需要较新的基础库（实测 2.30+ 可跑）。
+ * ⚠️ 升级 marked 时要重新生成这个文件，并跑一遍
+ * `node --test e2e/mp-chat-blocks.test.mjs`：里面有一条判据钉住这里的版本号与
+ * **UMD 导出键**（导出键必须是合法标识符，且 `walkTokens` 可调用 ——
+ * 它曾经被打成 `"walkTokens}"`，`require` 出来的 `marked.walkTokens` 是
+ * undefined，调用方只会看到一句 not a function）。产物里还含
+ * `?.` / `||=` / `Array.at()`，需要较新的基础库（实测 2.30+ 可跑）。
  */
 ;(function (root, factory) {
   if (typeof module === "object" && module.exports) { module.exports = factory(); }
@@ -116,7 +120,7 @@ Please report this to https://github.com/markedjs/marked.`,e){let s="<p>An error
     "parser": Rn,
     "setOptions": fn,
     "use": Pt,
-    "walkTokens}": mn,
+    "walkTokens": mn,
   };
   return __exports;
 });

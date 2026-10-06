@@ -196,6 +196,10 @@ const FG_ON = {
     // "页面底"，把 #ffffff on #ffffff 报成 1:1 的假红。
     '.send-label': '.composer-send',
     '.composer-send.off .send-label': '.composer-send.off',
+    // 中断键（执行中的发送键）的字压在自己的底色上：底 `--td-error-color-1`（浅底档）
+    // + 字 `--td-error-color-6`。**必须登记**，否则它退回页面/容器底兜底，
+    // 而白字压浅底那版（2.89:1）正是这条修复要防的东西。
+    '.composer-stop .send-label': '.composer-stop',
   },
   'pages/sessions/sessions.wxss': {},
 }

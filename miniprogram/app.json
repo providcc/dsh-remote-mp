@@ -4,7 +4,7 @@
     "pages/chat/chat"
   ],
   "lazyCodeLoading": "requiredComponents",
-  "darkmode": true,
+  "darkmode": false,
   "window": {
     "backgroundTextStyle": "dark",
     "navigationBarBackgroundColor": "#ffffff",

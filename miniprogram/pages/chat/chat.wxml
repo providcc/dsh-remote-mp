@@ -1,5 +1,9 @@
 <!-- 外层接 tap：点页面任何非输入区域都收起键盘（输入区/面板自己 catchtap 挡住）。
-     小程序默认不会因为点到别处而收键盘，键盘会一直盖住半屏。 -->
+     小程序默认不会因为点到别处而收键盘，键盘会一直盖住半屏。
+
+     ⚠️ 消息区那条 `catchtap="onCollapseTodos"` 会**截断冒泡**，外层这句在消息区收不到 ——
+     而消息区正是最常点的那片空白。所以 onCollapseTodos 里一并收了键盘
+     （chat.js 的 `_dismissKeyboard`），键盘的收起不靠这里的冒泡。 -->
 <view class="chat-wrap {{themeClass}}" bindtap="onTapBlank">
 
   <!-- 顶栏：这一页的「窗口控制条」—— 连接状态、当前模型与中断。
@@ -72,6 +76,9 @@
     </view>
   </block>
 
+  <!-- 消息区：catchtap 是必要的（里面还有可点的步骤组，bindtap 会让它们互相冒泡），
+       但它的副作用是**截断冒泡**：外层那句"点空白收键盘"在这里永远收不到。
+       所以 onCollapseTodos 自己把收键盘接上（chat.js 的 `_dismissKeyboard`）。 -->
   <scroll-view
     class="scroll"
     scroll-y

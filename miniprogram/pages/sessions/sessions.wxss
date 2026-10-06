@@ -363,6 +363,10 @@
   background: var(--td-component-border, #dcdcdc);
 }
 
+/* 左侧色条的三个颜色档，由 `item.badgeTheme` 选（js 里 badgeFor 只产出
+   primary/default，warning 是**留着一档**：主机侧补齐 awaiting-* 之后
+   待审批/待回答要用它，而"有的档有颜色、有的档没有"会让色条在某个状态下
+   变成空白 —— 那看起来像布局坏了。留着这一行零成本，删掉反而会埋一个坑。 */
 .sess-bar.primary { background: var(--td-brand-color, #0052d9); }
 .sess-bar.warning { background: var(--td-warning-color, #e37318); }
 .sess-bar.default { background: transparent; }
@@ -479,6 +483,12 @@
   color: var(--td-text-color-secondary, #5c6470);
 }
 
+/* 徽标的三种配色档，由 `item.badgeTheme` 选（wxml 绑的是变量，不是写死的类名）。
+   js 里 badgeFor 现在只产出 primary/default；warning / success 留着是因为
+   ① 主机侧的 awaiting-* 一旦补齐，待审批/待回答要用 warning；
+   ② 每一档都要有配色，缺一档就会出现"某条会话的徽标没有底色"（看起来像渲染坏了）；
+   ③ e2e 有一条判据按名字锁着 `.sess-badge.warning`（删掉它那条会红）。
+   三档都以 `--td-*-color-1` 为底、`-6` 为字：两端主题都过对比度（见 check-mp-contrast）。 */
 .sess-badge.primary {
   background: var(--td-brand-color-1, #f2f3ff);
   color: var(--td-brand-color-on-tint, #0052d9);

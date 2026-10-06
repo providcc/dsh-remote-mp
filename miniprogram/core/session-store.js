@@ -62,12 +62,39 @@ function installId() {
  * @property {number} pairedAt
  */
 
-/** @returns {Pairing|null} */
+/**
+ * 上一次 `loadPairing()` 丢掉坏记录的原因（`''` = 没丢过）。
+ *
+ * 为什么要有它：`hydrate()` 必须把「这台机器没配过对」与「配过、但存储里的记录坏了」
+ * 分开说 —— 后者要清掉并要求重新扫码，前者是正常的首启。只返回 null 的话两种
+ * 情况长得一模一样，用户看到的是"什么都没有"，而真相是"你那把钥匙坏了"。
+ */
+var lastLoadError = ''
+
+/** @returns {Pairing|null} 形状不对（含 psk 不是 base64 16 字节）就当没有配对，并就地清掉。 */
 function loadPairing() {
+  lastLoadError = ''
   var p = read(KEY_PAIRING, null)
   if (!p || typeof p !== 'object') return null
   if (!p.server || !p.psk || !p.convId) return null
+  // 坏记录**不能留**：留着的话每次启动都会再读一次、再派生出一次异常。
+  // psk 的校验尤其重要：非 base64 会让 js-base64 抛 InvalidCharacterError，
+  // 而 hydrate() 是 App.onLaunch 调的 —— 那就是"小程序启动即失败、无提示、无法自愈"。
+  if (!codec.isValidPairingServer(p.server)) return dropCorrupt('server')
+  if (!codec.isValidPsk(p.psk)) return dropCorrupt('psk')
+  if (typeof p.convId !== 'string' || !p.convId) return dropCorrupt('convId')
   return p
+}
+
+function dropCorrupt(why) {
+  lastLoadError = why
+  clearPairing()
+  return null
+}
+
+/** 上一次 loadPairing 丢掉坏记录的原因（'' = 没有）。 */
+function loadPairingError() {
+  return lastLoadError
 }
 
 function savePairing(pairing) {
@@ -100,6 +127,7 @@ function setServerUrl(u) {
 module.exports = {
   installId: installId,
   loadPairing: loadPairing,
+  loadPairingError: loadPairingError,
   savePairing: savePairing,
   clearPairing: clearPairing,
   nextNonceFor: nextNonceFor,

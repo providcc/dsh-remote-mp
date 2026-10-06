@@ -87,6 +87,10 @@ function statusView(status) {
     case 'pairing':
       return { label: '连接中', theme: 'primary' }
     case 'error':
+      // 当前**不可达**：client.js 的状态枚举里有 error，但没有任何
+      // `_setStatus('error', …)` 调用点。留着它是"枚举的一半"——删掉的话将来真出现
+      // error 时会被 default 吞成"未连接"，而那正是这里已经说好的一句错话
+      // （用户离线不等于没配对过）。文案与颜色都按"不报警"的产品口径定过。
       return { label: '离线中', theme: 'default' }
     default:
       return { label: '未连接', theme: 'default' }
@@ -242,8 +246,6 @@ Page({
     if (evt.kind === 'payload') this._touchLink()
     if (evt.kind === 'payload' && evt.payload.t === 'ev.session_changed') {
       this._renderSessions(this.client.sessions)
-    } else if (evt.kind === 'payload' && evt.payload.t === 'ev.keep_awake_state') {
-      this._renderKeepAwake(evt.payload)
     } else if (evt.kind === 'payload' && evt.payload.t === 'ev.question_request') {
       // 停在列表页时 chat 页不在（小程序一次只活一页），提问卡没有地方弹。
       // 静默吞掉 = 主机阻塞等回答而手机毫无痕迹（与 chat 页跨会话那句同因）。
@@ -259,6 +261,11 @@ Page({
       if (evt.status === 'online') {
         if (this.data.busy && wx.vibrateShort) wx.vibrateShort({ type: 'light' })
         this.setData({ paired: true, busy: false, manualOpen: false })
+        // **首页扫码当场配对成功这条路不经过 onShow 的那次 `_startLinkTick()`**：
+        // onShow 跑的时候还没配对，它在上面 `!isPaired()` 那一支就 return 了，
+        // 于是 tick 永不启动 —— 主机卡那行"· N 秒前有消息"从第一帧起就冻着。
+        // 这里（状态真的变成 online）是这条路上唯一能起表的地方。
+        this._startLinkTick()
         this.refresh()
       } else if (evt.status === 'needs-pair') {
         // 配对在服务端已经失效（主机重启过 / 会话被回收）—— 客户端丢了自己的 pairing，
@@ -455,11 +462,15 @@ Page({
       onlyFromCamera: false,
       scanType: ['qrCode'],
       success: function (res) {
-        var parsed = codec.parsePairingQr(res.result || '')
+        var text = res.result || ''
+        var parsed = codec.parsePairingQr(text)
         if (!parsed) {
+          // 「不是 DSH 的二维码」与「是 DSH 的二维码、但里面某一项不合法」要分开说：
+          // 前者要换一张，后者要让主机重新生成。用同一句"无法识别"会把用户支错方向。
+          var why = codec.pairingQrError(text)
           wx.showModal({
-            title: '无法识别',
-            content: '这不是 DSH 远程控制的配对二维码。二维码应以 dshr:/p? 开头。',
+            title: why ? '二维码里的信息不合法' : '无法识别',
+            content: why || '这不是 DSH 远程控制的配对二维码。二维码应以 dshr:/p? 开头。',
             showCancel: false,
           })
           return
@@ -531,6 +542,13 @@ Page({
     if (!text) return
     var parsed = codec.parsePairingQr(text)
     if (!parsed) {
+      // 是 DSH 的二维码但某一项不合法（地址不是 ws(s) / 密钥不是 base64）：
+      // 说清是哪一项，别让用户以为"再粘一次就好了"。
+      var why = codec.pairingQrError(text)
+      if (why) {
+        wx.showToast({ title: why.slice(0, 40), icon: 'none' })
+        return
+      }
       // 也接受直接粘 6 位配对码 —— 人们就是这么试的
       var digits = text.replace(/\D/g, '')
       if (/^\d{6}$/.test(digits)) {

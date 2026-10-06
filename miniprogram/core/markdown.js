@@ -35,25 +35,45 @@
 var marked = require('./vendor/marked.js')
 
 // ── 主题色板 ──────────────────────────────────────────────────────────
-// 与 miniprogram/theme/{light,dark}.wxss 里那几个变量**同一个口径**。
-// 取的是「正文色 / 次要色 / 分隔线 / 代码底」这四个真正会被 markdown 用到的，
-// 全部经过 check-mp-contrast 的对比度校验（正文 4.5:1）。
+/**
+ * 这些是**手挑的固定色值**，不是从 `theme/{light,dark}.wxss` 里读出来的
+ * （`rich-text` 不认 var()，见文件头）。
+ *
+ * 溯源要说实话：变量表里那几个 token 是**别名**（`--td-text-color-primary` →
+ * `--td-font-gray-1` 是带 alpha 的黑/白），而这里必须是能直接写进 inline style 的
+ * 实色，所以只能取"压在该主题的容器底上算出来的那个色"。它们与 token
+ * **同一档语义、数值不逐字相等**（例：浅色正文 #181818，而 token 压白底约 #1a1a1a）。
+ * 改配色时两处都要看；对比度由 `scripts/check-mp-contrast.mjs` 兜（它认得这里的色值）：
+ *
+ *   light（压在白卡片 #ffffff 上）
+ *     text     正文近黑                      ← --td-text-color-primary（rgba(0,0,0,.9) 压白）
+ *     muted    次要/占位灰                   ← --td-text-color-placeholder（light.wxss 覆盖为 rgba(0,0,0,.56)）
+ *     rule     分隔线                        ← 边框灰那一档
+ *     codeBg   代码块底（比正文卡深一档）      ← --td-bg-color-page 灰
+ *     quoteBg  引用块/表头底（比正文卡浅一档，当"内嵌"用）
+ *     link     链接                          ← --td-brand-color（= --td-brand-color-7 #0052d9，逐字相同）
+ *
+ *   dark（压在正文卡 #2c2c2c = --td-gray-color-12 上）
+ *     text     正文必须够亮（本项目踩过"字全黑"）← --td-text-color-primary（rgba(255,255,255,.9)）
+ *     muted    次要/占位灰                   ← --td-text-color-placeholder（dark.wxss 覆盖为 rgba(255,255,255,.5)）
+ *     rule     分隔线（比卡片亮一档，否则看不见）
+ *     codeBg   代码块底 —— 比卡片**亮一档**（曾经与卡片同色 → 代码块整块消失，2026-10-04 修）
+ *     quoteBg  引用块/表头底 —— 比卡片暗一档（同一次一起定的）
+ *     link     链接（比浅色那档亮，压深底才读得清）
+ */
 var PALETTE = {
   light: {
-    text: '#181818', // --td-text-color-primary
-    muted: '#7a7a7a', // --td-text-color-placeholder（对比度校验过 ≥4.5）
-    rule: '#e5e5e5', // --td-border-color / 分隔线
-    codeBg: '#f3f3f3', // --td-brand-color-1 浅底档
+    text: '#181818',
+    muted: '#7a7a7a',
+    rule: '#e5e5e5',
+    codeBg: '#f3f3f3',
     quoteBg: '#fafafa',
-    link: '#0052d9' // --td-brand-color
+    link: '#0052d9'
   },
   dark: {
-    text: '#e8e8e8', // 深色下正文必须够亮（本项目踩过"字全黑"）
+    text: '#e8e8e8',
     muted: '#9a9a9a',
     rule: '#3a3a3a',
-    // 正文卡深色下是 #2c2c2c（见 chat.wxss 的 .theme-dark .reply）。
-    // codeBg 比卡片**亮一档**（曾经与卡片同色 → 代码块整块消失，2026-10-04 修）；
-    // quoteBg 暗一档当"内嵌"用（引用块与表头），也是那时候一起抬起来的。
     codeBg: '#333333',
     quoteBg: '#262626',
     link: '#5a9bff'

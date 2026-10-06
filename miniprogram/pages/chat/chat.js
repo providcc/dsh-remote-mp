@@ -107,6 +107,18 @@ var MAX_ATTACH_TOTAL_BYTES = 512 * 1024
 var MAX_IMAGE_BYTES = 512 * 1024
 var MAX_IMAGE_TOTAL_BYTES = 512 * 1024
 var MAX_TEXT_PER_BLOCK = 20000
+/**
+ * **正文总量上限（字符）** —— 块数上限不封顶字节，这条才是 setData 的护栏。
+ *
+ * 为什么必须有：markdown 的 nodes 是原文的 13.7 倍（实测 20000 字符 → 274KB JSON），
+ * 而 `MAX_BLOCKS=400` 只封顶块数 —— 400 块正文能到好几 MB。小程序的 setData
+ * **单次上限 1MB，超了是静默丢弃**（更新不生效、正文从此不再刷新，最难查的那种坏）。
+ * 30000 字符按同一比例约 410KB，加块流本身仍在半程以内。
+ * 超了从**旧到新**截断：最新那段永远完整，旧的那几段换成一句明说被省略的提示
+ * （`TEXT_TRIM_NOTICE`）——用户知道那里本来有内容，而不是以为模型没写过。
+ */
+var MAX_TOTAL_TEXT_CHARS = 30000
+var TEXT_TRIM_NOTICE = '…（这段较早的正文已省略：手机上只保留最近 ' + MAX_TOTAL_TEXT_CHARS + ' 字）'
 var DELTA_FLUSH_MS = 100
 var DELTA_FLUSH_CHARS = 4096
 var THINK_TICK_MS = 1000
@@ -153,6 +165,11 @@ function firstLine(text) {
  * （合盖、睡觉、地铁），所以 error 也**不用红色**——红在这里说的是"你的东西坏了"，
  * 而实际要传达的只是"现在没连上"。中性灰 + 一句人话就够。
  * 全页没有 warning：真需要用户动手的状态（待审批/待回答）用品牌色。
+ *
+ * `error` 这一支当前**不可达**（client.js 的状态枚举里有它，但没有任何
+ * `_setStatus('error', …)` 调用点）。留着是为了"枚举的一半"：删掉的话，
+ * 将来真出现 error 时会掉进 default 支，而那与它现在的语义恰好相同（中性灰）——
+ * 也就是说留着零成本，删掉也不会更对；写在这里免得下一个人以为漏了一档。
  */
 function connTheme(status) {
   if (status === 'online') return 'success'
@@ -294,8 +311,10 @@ Page({
      * 两层索引与循环项都不行（`_withMd` 的注释里有逐档结果）。
      * 所以由 `_commit` 把块上的 `_md` 收进这个 map，wxml 按 `item.key` 取。
      *
-     * 代价是同一份 nodes 在 data 里存了两处（块上 `_md` + 这个 map）；
-     * `_md` 用 `_` 开头表示"给收集用的中间量"，不进 wxml。
+     * 而且**块上那份 `_md` 不进 setData**（`_commit` 会剥掉）：同一份 nodes 存两处
+     * 时，一条 20000 字符的正文就是两块各 274KB —— 单次 setData 的硬上限是 1MB，
+     * 超了静默丢弃（正文不再刷新）。nodes 缓存在页面实例的 `_mdNodes` 上，
+     * 这个 map 是交给渲染层的那一份。
      */
     mdBodies: {},
   },
@@ -316,6 +335,18 @@ Page({
     this._textIndex = {}
     this._counter = 0
     this._deltaBuf = {}
+    /**
+     * 用户回传（role:'user'）的**累积缓冲**：主机把一条长消息切成多帧，
+     * 而本地回显是整条 —— 半截去比永远对不上（见 `_applyDelta`）。
+     */
+    this._userEcho = {}
+    /**
+     * markdown nodes 的缓存（块 key → nodes）。`_commit` 交给渲染层的 blocks
+     * **不带 `_md`**（同一份 nodes 存两处 = 一条长回复撑到两倍，见 `_commit`），
+     * 所以缓存必须落在页面实例上，否则下一次提交（收卡、运行态、工具事件）
+     * 会因为块上已经没有 `_md` 而把正文的 nodes 全丢掉。
+     */
+    this._mdNodes = {}
     this._deltaTimer = null
     this._thinkTimer = null
     this._autoScroll = true
@@ -352,6 +383,10 @@ Page({
     this._off = this.client.on(this._onEvent.bind(this))
     this._retheme()
     this._renderBar()
+    // 卡片倒数是 setTimeout 链，onHide 停掉之后**必须在这里重启**：
+    // 不重启的话，从后台回来那张卡还挂着，而"还剩 N 秒"冻在离开时的数字上
+    // （主机那边照常在走，用户按着一个看着还有 2 分钟的按钮其实早就作废了）。
+    if (this.data.pendingPermission || this.data.pendingQuestion) this._startCardTick()
     this.client.listSessions()
     this._maybeLoadHistory()
     // 挂起的审批/提问是「以 dsh 为准」：进会话主动拉一次，别等主机恰好有变化。
@@ -392,10 +427,7 @@ Page({
   },
 
   onHide: function () {
-    if (this._deltaTimer) {
-      clearTimeout(this._deltaTimer)
-      this._deltaTimer = null
-    }
+    this._clearDeltaTimer()
     this._flushDelta()
     this._stopThinkTick()
     this._stopCardTick()
@@ -406,11 +438,23 @@ Page({
   },
 
   onUnload: function () {
+    // 与 onHide 同一套收尾：**退页之后 delta 定时器还会醒**，那一刻页面已经销毁，
+    // setData 落到一个不存在的页面上（不报错、不生效，纯泄漏）。
+    // onHide 清了而 onUnload 没清，走"从会话列表返回"这条路时就会漏。
+    this._clearDeltaTimer()
     this._stopThinkTick()
     this._stopCardTick()
     if (this._off) {
       this._off()
       this._off = null
+    }
+  },
+
+  /** 撤掉待刷的 delta 定时器（onHide / onUnload 共用） */
+  _clearDeltaTimer: function () {
+    if (this._deltaTimer) {
+      clearTimeout(this._deltaTimer)
+      this._deltaTimer = null
     }
   },
 
@@ -518,6 +562,16 @@ Page({
    * 现在：外层容器接 tap（子级 tap 会冒泡上来），输入区/面板用 catchtap 挡住不误收。
    */
   onTapBlank: function () {
+    this._dismissKeyboard()
+  },
+
+  /**
+   * 收起键盘（外层 tap 与消息区那条 catchtap 共用）。
+   *
+   * 消息区的 `catchtap="onCollapseTodos"` 会**截断冒泡**，所以外层那句 bindtap
+   * 在消息区永远收不到 —— 而消息区正是最常点的那片空白。它必须自己把这一半接上。
+   */
+  _dismissKeyboard: function () {
     if (!this.data.inputFocus) return
     this.setData({ inputFocus: false })
     if (typeof wx.hideKeyboard === 'function') wx.hideKeyboard({ fail: function () {} })
@@ -766,10 +820,19 @@ Page({
     this.setData({ todosOpen: !this.data.todosOpen })
   },
 
-  /** 点消息区（scroll-view 的 catchtap）就收回 —— 展开态是临时的，不该常驻。 */
+  /**
+   * 点消息区：收回待办面板（展开态是临时的，不该常驻）。
+   *
+   * 这个处理器挂在 scroll-view 的 **catchtap** 上（待办条要能点开，而 scroll-view
+   * 里还有可点的步骤组，不能用 bindtap 让它们互相冒泡），冒泡因此到此为止 ——
+   * 外层 `.chat-wrap` 那句「点空白收键盘」在消息区永远收不到。而消息区恰恰是
+   * 用户最常点的那片"空白"：点正文想收键盘，结果什么都没发生。
+   * 所以这里把收键盘那一并接上，而不是把 catchtap 去掉（去掉会让点步骤组也收键盘，
+   * 还会把面板的收起动作变成冒泡的副作用，两处管一件事）。
+   */
   onCollapseTodos: function () {
-    if (!this.data.todosOpen) return
-    this.setData({ todosOpen: false })
+    if (this.data.todosOpen) this.setData({ todosOpen: false })
+    this._dismissKeyboard()
   },
 
   // ── 历史：打开会话时把主机上已有的内容读进来 ───────────────────────
@@ -827,7 +890,18 @@ Page({
         // 那会把用户从刚读到的位置甩到最下面。
         var firstPage = self.data.blocks.length === 0
         var replayed = self._replayPage(items)
-        var merged = replayed.concat(self.data.blocks)
+        // **第一页不能无条件拼在最前面**：屏幕上可能已经有实时内容，而这一页里
+        // 有些条目与屏幕重叠（按 id 跳过、不占位）。直接 concat 会把"历史里还没渲染过
+        // 的那几条"放到**比它们旧**的屏幕内容之前（实测：屏幕上已有 m1/c2，
+        // 历史页是 c1/m1/c2/m3 时顺序会变成 c1/m3/m1/c2）。
+        // `_replayAnchors` 给出每一条新块在页内紧随其后的那个"屏幕上也有的"块，
+        // 据此插到它前面；更早页（first=false）仍按老规矩整页拼在前面。
+        var merged
+        if (first && self.data.blocks.length) {
+          merged = self._mergeByAnchors(replayed, self._replayAnchors || [], self.data.blocks)
+        } else {
+          merged = replayed.concat(self.data.blocks)
+        }
         self._historyBefore = typeof page.nextBeforeSeq === 'number' ? page.nextBeforeSeq : null
         self.setData({
           historyState: 'ok',
@@ -848,6 +922,20 @@ Page({
         if (first && self._replayTodos && !self._todoLive) {
           self._setTodos(self._replayTodos)
         }
+      })
+      .catch(function (e) {
+        // `.then` 里抛错（页形状不对、页面自己的 bug）也必须把状态复位：
+        // 不 catch 的话 `historyState` 永远停在 'loading'，界面永远是
+        // "正在读取主机上的历史…"，用户只能退出重进；而且 `_historyBusy` 也再也
+        // 回不到 false，之后每次重连都被它挡在门外。
+        self._historyBusy = false
+        if (first) {
+          self._historyStarted = false
+          self.setData({ historyState: 'error' })
+        } else {
+          self.setData({ historyLoadingMore: false })
+        }
+        wx.showToast({ title: '主机上的历史没读到', icon: 'none' })
       })
   },
 
@@ -872,12 +960,21 @@ Page({
    * 3. **与已有块按 id 去重**：会话正在跑的时候进来，同一条消息可能实时渲染过一次、
    *    历史里又出现一次。协议层保证两条路径算出的 `messageId` 逐字相同，所以按 id 去重是可靠的。
    *    用户消息是唯一没有可对齐 id 的（本地回显是即时造的块），退化成按文本对齐。
+   *
+   * 去重是"跳过"而不是"占位"，所以返回的**新块顺序**要靠 `_replayAnchors` 与屏幕上
+   * 现有的块对齐（见 `_mergeByAnchors`）：每一个新块记下它在页内紧随其后的那个
+   * "屏幕上也有的"块的 key，合并时插到它前面。
    */
   _replayPage: function (items) {
     var existing = this.data.blocks
     // 这一页里的最后一份待办快照（全量语义：后面的覆盖前面的）。没有就是 undefined——
     // 调用方据此区分"这页没有待办"与"这页有一条空清单"。
     this._replayTodos = undefined
+    // 与 out 平行：out[i] 的锚点（屏幕上那个"它应该排在前面"的块的 key）。
+    // null = 页里它后面没有已渲染过的块（比屏幕上所有东西都新，落在最后）。
+    var anchors = []
+    /** 已生成、还没等到锚点的 out 下标（等到下一个"屏幕上也有的"块就一起结算）。 */
+    var pending = []
 
     /**
      * 下面这几张表**只是"屏幕上已经有的东西"的快照，回放过程中绝不往里登记自己**。
@@ -887,24 +984,40 @@ Page({
      * 「正在执行」且结果预览是空的。而一页里同一个 `callId` 出现两次本来就是**正常**的：
      * 主机侧是一条内核事件折成一条线格式条目（`historyPageFromLog`）。
      * 同一条消息的多个 delta 也是同理。去重只该针对"实时已经渲染过、历史里又来一遍"。
+     * 现在它们同时承担第二件事：记下**对应屏幕块的 key**，用来对齐顺序。
      */
     var onScreenText = {}
     var onScreenTool = {}
-    /** 本地回显的用户块按文本记数。用户消息没有能跨端对齐的 id，只能按文本对齐。 */
+    /** 本地回显的用户块按文本记**块 key 队列**：同文本可能有好几条（多重集消耗）。 */
     var localEcho = {}
     for (var i = 0; i < existing.length; i++) {
       var b = existing[i]
-      if (b.msgId) onScreenText[b.msgId] = true
+      if (b.msgId) onScreenText[b.msgId] = b.key
       if (b.kind === 'user') {
         var ut = String(b.text || '').trim()
-        if (ut) localEcho[ut] = (localEcho[ut] || 0) + 1
+        if (ut) {
+          if (!localEcho[ut]) localEcho[ut] = []
+          localEcho[ut].push(b.key)
+        }
       }
       if (b.kind !== 'steps') continue
-      for (var j = 0; j < b.items.length; j++) onScreenTool[b.items[j].callId] = true
+      for (var j = 0; j < b.items.length; j++) onScreenTool[b.items[j].callId] = b.key
     }
 
     var localIndex = {}
     var out = []
+    /** 每次 out 变长之后补登记锚点槽位（apply* 只会往后追加） */
+    var track = function () {
+      while (anchors.length < out.length) {
+        anchors.push(null)
+        pending.push(anchors.length - 1)
+      }
+    }
+    /** 遇到一个"屏幕上也有的"块：在它之前生成的那些新块都排在它前面 */
+    var settle = function (key) {
+      for (var p = 0; p < pending.length; p++) anchors[pending[p]] = key
+      pending = []
+    }
     for (var k = 0; k < items.length; k++) {
       var it = items[k]
       // 待办不进块流（它是"此刻的清单"，不是一条消息）：记下最后一份，
@@ -914,8 +1027,12 @@ Page({
         continue
       }
       if (it.t === 'ev.tool_event') {
-        if (it.callId && onScreenTool[it.callId]) continue
+        if (it.callId && onScreenTool[it.callId]) {
+          settle(onScreenTool[it.callId])
+          continue
+        }
         out = this._applyTool(out, it, false)
+        track()
         continue
       }
       if (it.t !== 'ev.message_delta') continue
@@ -923,22 +1040,58 @@ Page({
         // 本地已经立刻回显过的那句，历史里又来一遍。**按多重集消耗**而不是简单判相等：
         // 「继续」这种话整个会话里会出现很多次，判相等会把更早那一页里重复的那句也一起吞掉。
         var echo = String(it.delta || '').trim()
-        if (echo && localEcho[echo]) {
-          localEcho[echo] -= 1
+        if (echo && localEcho[echo] && localEcho[echo].length) {
+          settle(localEcho[echo].shift())
           continue
         }
         out = this._append(out, { key: 'r' + this._counter++, kind: 'turn', label: '', time: '' })
+        track()
         out = this._append(out, {
           key: 'u' + this._counter++,
           kind: 'user',
           text: it.delta || '',
           confirmed: true,
         })
+        track()
         continue
       }
-      if (it.messageId && onScreenText[it.messageId]) continue
+      if (it.messageId && onScreenText[it.messageId]) {
+        settle(onScreenText[it.messageId])
+        continue
+      }
       out = this._applyText(out, localIndex, it.messageId, it.delta || '', true)
+      track()
     }
+    this._replayAnchors = anchors
+    return out
+  },
+
+  /**
+   * 把一页历史生成的新块按锚点插进屏幕上现有的块流（见 `_replayPage`）。
+   *
+   * 三个分支：
+   *   · 一个锚点都没有 —— 这一页与屏幕上的内容没有交集，维持老行为（整页拼在最前面）。
+   *     往前翻的那条路（`_loadHistory(cursor)`）不经过这里，它按定义就是"更早"。
+   *   · 有锚点 —— 按锚点把新块插到它前面，屏幕上的块保持原顺序。
+   *   · 尾部没有锚点的新块 —— 页里它们后面没有已渲染过的块，就是更新的内容，落在最后。
+   */
+  _mergeByAnchors: function (replayed, anchors, existing) {
+    var any = false
+    for (var a = 0; a < anchors.length; a++) {
+      if (anchors[a]) {
+        any = true
+        break
+      }
+    }
+    if (!any) return replayed.concat(existing)
+    var out = []
+    var i = 0
+    for (var e = 0; e < existing.length; e++) {
+      var key = existing[e].key
+      while (i < replayed.length && anchors[i] === key) out.push(replayed[i++])
+      out.push(existing[e])
+    }
+    while (i < replayed.length) out.push(replayed[i++])
     return out
   },
 
@@ -1001,7 +1154,19 @@ Page({
     // 宿主会把用户自己的消息也回传一次（user/message → role:'user'），
     // 而本地已经立刻回显过。不再去重的话屏幕上会出现两遍。
     if (role === 'user') {
-      if (text) this._onUserEcho(text)
+      // **攒到 done 再匹配**。回传会被切帧（一条长消息按 DELTA_FLUSH_CHARS=4096
+      // 分几次交出去），而本地回显是**整条** —— 拿半截去比永远对不上，
+      // 于是同一条消息在屏幕上变成两三条半截的用户块（真机上 >4096 字符必现）。
+      // 主机侧一条 user delta 无论切几片，最后一片一定带 done（`window.ts` 的
+      // 合帧器在收尾帧上补 done），所以攒到 done 是可靠的。
+      if (!this._userEcho) this._userEcho = {}
+      var acc = (this._userEcho[messageId] || '') + (text || '')
+      if (!done) {
+        this._userEcho[messageId] = acc
+        return
+      }
+      delete this._userEcho[messageId]
+      if (acc) this._onUserEcho(acc)
       return
     }
     this._commit(this._applyText(this.data.blocks, this._textIndex, messageId, text, done))
@@ -1097,11 +1262,13 @@ Page({
    */
   _withMd: function (b) {
     if (!b || b.kind !== 'text') return b
+    if (!this._mdNodes) this._mdNodes = {}
     // 正文还是空的时候不要建任何 md 字段：wxml 判 map 里没有这一块时会走
     // 「流式纯文本」那一支，而空文本那一支本来就不该渲染出东西。
     if (!b.text) {
       b._md = null
       b.mdPending = ''
+      delete this._mdNodes[b.key]
       return b
     }
     try {
@@ -1118,10 +1285,14 @@ Page({
       // 百分比分配，留在正文里一起渲染（core/markdown.js 的 `tableNode`）。
       b._md = { nodes: r.nodes }
       b.mdPending = r.pending
+      // **同时按块 key 缓存一份**：交给渲染层的 blocks 会被剥掉 `_md`
+      // （同一份 nodes 不进两次 setData），下一次提交要靠这份缓存把 nodes 找回来。
+      this._mdNodes[b.key] = r.nodes
     } catch (e) {
       // 渲染层崩了不能连累正文：退回纯文本那一支（wxml 拿不到 nodes 时就走它）
       b._md = null
       b.mdPending = b.text
+      delete this._mdNodes[b.key]
     }
     return b
   },
@@ -1398,19 +1569,29 @@ Page({
   /**
    * 运行态**只认这里**。`ev.message_delta` 的 done 只管"这条消息写完了"，
    * 一轮里可以有好几条 —— 拿它当"这一轮结束"会让状态条在第一次工具调用后就骗人。
+   *
+   * ── 为什么 running **不**粗清卡片 ───────────────────────────────────
+   * 主机在"桌面先答掉一张卡"之后会 `voidStaleCard` → 广播 `runState(state:'running')`，
+   * 而这一帧里**只有那一张**被作废。旧写法拿它当粗收单，把两张卡一起清掉 ——
+   * 还挂着的那张（例如一个正在等回答的提问）在手机上直接消失，而主机继续阻塞，
+   * 直到 300 秒超时按"没答上"处理。用户完全不知道自己错过了一次提问。
+   * 所以 running 里"哪张没了"只认**精确帧** `ev.permission_resolved` /
+   * `ev.question_resolved`；只有回到 idle（这一轮结束了，挂着的卡都过期）才粗清。
    */
   _onRunState: function (p) {
     var running = p.state === 'running'
     var blocks = this.data.blocks
     if (!running) blocks = this._closeThink(blocks)
-    // 这条帧是"挂着的审批/提问已经作废"的唯一信号（只有 running/idle 会发），
-    // 所以收起卡片的同时必须停掉那个还在走的表，否则它会一直 setData 到天荒地老。
-    if (this.data.pendingPermission || this.data.pendingQuestion) this._stopCardTick()
-    // 瞬时提示（重试/压缩）只在"这一轮"里有意义：回到 idle 说明这一轮结束了，
-    // 留着"正在重试 2/5"会让用户以为下一轮还没开始。压缩失败那句也在这里清 ——
-    // 它在失败那一刻已经说过那句话，idle 时再挂着就是在说一件过去的事。
-    var patch = { running: running, pendingPermission: null, pendingQuestion: null }
-    if (!running && this.data.notice) patch.notice = ''
+    var patch = { running: running }
+    if (!running) {
+      if (this.data.pendingPermission || this.data.pendingQuestion) this._stopCardTick()
+      patch.pendingPermission = null
+      patch.pendingQuestion = null
+      // 瞬时提示（重试/压缩）只在"这一轮"里有意义：回到 idle 说明这一轮结束了，
+      // 留着"正在重试 2/5"会让用户以为下一轮还没开始。压缩失败那句也在这里清 ——
+      // 它在失败那一刻已经说过那句话，idle 时再挂着就是在说一件过去的事。
+      if (this.data.notice) patch.notice = ''
+    }
     this.setData(patch)
     if (running) {
       this._startThinkTick()
@@ -1621,16 +1802,69 @@ Page({
   },
 
   // ── 块流提交：从头部裁剪，绝不在块中间下刀 ────────────────────────
+  /**
+   * 块数封顶。上一轮那条省略提示也在块流里，**它不参与计数** ——
+   * 不先剔掉的话 `dropped` 每次都会把提示自己算进去：长度恒为 MAX_BLOCKS+1，
+   * 而提示里的数字**永远停在 2**（"每帧都报已省略 2 个片段"），
+   * 用户看不出到底省了多少，也没法判断后面还有多少内容被丢了。
+   */
   _trim: function (blocks) {
-    if (blocks.length <= MAX_BLOCKS) return blocks
-    var dropped = blocks.length - MAX_BLOCKS
-    var kept = blocks.slice(dropped)
-    kept.unshift({
+    var kept = blocks
+    var prevNote = null
+    var prevDropped = 0
+    var first = blocks[0]
+    if (first && first.kind === 'note' && first.trimKey === 'trim') {
+      prevNote = first
+      kept = blocks.slice(1)
+      prevDropped = Number(first.dropped) || 0
+    }
+    if (kept.length <= MAX_BLOCKS) {
+      // 剔掉提示之后没超：提示要留着（否则它会一闪一没），没有提示就原样返回。
+      return prevNote ? [prevNote].concat(kept) : kept
+    }
+    var dropped = prevDropped + (kept.length - MAX_BLOCKS)
+    var out = kept.slice(kept.length - MAX_BLOCKS)
+    out.unshift({
       key: 'trim',
       kind: 'note',
+      trimKey: 'trim',
+      dropped: dropped,
       text: '…已省略较早的 ' + dropped + ' 个片段（仅保留最近 ' + MAX_BLOCKS + ' 个）',
     })
-    return kept
+    return out
+  },
+
+  /**
+   * 正文总量封顶（见 {@link MAX_TOTAL_TEXT_CHARS}）。
+   *
+   * 从**最新往最旧**累计：最新的那几段保持完整（用户正在读的就是它们），
+   * 一旦预算用完，更旧的正文档位换成一句明说"这段被省略了"的提示。
+   * 不这么做的话：一条 20000 字符的正文配一份 274KB 的 nodes，几条就能把
+   * 单次 setData 顶过 1MB —— 超限是**静默丢弃**，正文从此不再刷新。
+   *
+   * 幂等：已经截过的块（`trimmed`）不再重复处理，所以每帧调用不会反复重排。
+   */
+  _capText: function (blocks) {
+    var total = 0
+    var cut = false
+    var out = blocks
+    for (var i = blocks.length - 1; i >= 0; i--) {
+      var b = blocks[i]
+      if (b.kind !== 'text' || !b.text) continue
+      if (!cut && total + b.text.length <= MAX_TOTAL_TEXT_CHARS) {
+        total += b.text.length
+        continue
+      }
+      cut = true
+      if (b.trimmed) continue
+      if (out === blocks) out = blocks.slice()
+      var c = copyBlock(b)
+      c.text = TEXT_TRIM_NOTICE
+      c.trimmed = true
+      c.done = true
+      out[i] = this._withMd(c)
+    }
+    return out
   },
 
   /** 裁剪后下标全变了，重建索引表，否则后续 delta 会写到错误的位置 */
@@ -1653,18 +1887,38 @@ Page({
     // 轮次号统一在这里重排：历史往前拼、实时往后接，两种方向都会让编号漂
     var renumbered = this._renumberTurns(blocks)
     var trimmed = this._trim(this._decorate(renumbered.blocks))
+    // 正文总量在这里封顶（块数上限管不到字节，见 MAX_TOTAL_TEXT_CHARS）
+    trimmed = this._capText(trimmed)
     this._reindex(trimmed)
     // markdown 的 nodes 收进**顶层** map：wxml 要按 `item.key` 取，不能直接
     // 绑块上的字段（`rich-text` 那样会渲染成 0 高度空块，见 `_withMd` 的说明）。
     // 每次**整份重建**而不是增量改：块数有上限（MAX_BLOCKS），一份重建的
     // 成本就是一次遍历，而增量改要额外判断"哪一块被裁掉了"，漏一次就是
     // 一块永远留在 map 里的孤儿 nodes（会渲染出一段没人能解释的内容）。
+    //
+    // ⚠️ **交给渲染层的 blocks 必须剥掉 `_md`**：同一份 nodes 存两处时，
+    // 一条 20000 字符的正文在 setData 里是两块各 274KB（约 550KB），
+    // 再加上别的块就能顶过单次 1MB 的硬上限 —— 超限是静默丢弃，正文不再刷新。
+    // 剥掉的那一份缓存在 `_mdNodes`（按块 key），下一次提交照样取得到。
+    if (!this._mdNodes) this._mdNodes = {}
     var bodies = {}
+    var payload = new Array(trimmed.length)
     for (var i = 0; i < trimmed.length; i++) {
       var b = trimmed[i]
-      if (b._md) bodies[b.key] = b._md.nodes
+      var nodes = b._md ? b._md.nodes : null
+      if (nodes) bodies[b.key] = nodes
+      else if (b.kind === 'text' && b.text && this._mdNodes[b.key]) bodies[b.key] = this._mdNodes[b.key]
+      if (b._md) {
+        var c = copyBlock(b)
+        delete c._md
+        payload[i] = c
+      } else {
+        payload[i] = b
+      }
     }
-    this.setData({ blocks: trimmed, turn: renumbered.turn, mdBodies: bodies }, function () {
+    // 缓存只留还在块流里的（被裁掉的块不许留孤儿 nodes）
+    this._mdNodes = bodies
+    this.setData({ blocks: payload, turn: renumbered.turn, mdBodies: bodies }, function () {
       // 只在用户还贴着底部时跟随；他往上翻过就让他安静地读。
       // 「加载更早」那一路显式静音：往前插内容时跟底会把他从刚读到的位置甩走。
       if (!(opts && opts.noScroll) && self._autoScroll) self._scrollToBottom()
@@ -1976,6 +2230,14 @@ Page({
       }
       var f = files[i++]
       var picked = f.tempFilePath
+      // **没有 compressImage 就直接进下一步**：老容器 / 工具某些模式下这个 API
+      // 不存在，无条件调用会在用户点加号时抛一句 TypeError（"加不进来"）。
+      // 文件头那句"没有 compressImage 就用相册给的文件"说的就是这一支 ——
+      // 缩图那一步（画布）自己还有一次能力探测，两处都不行才会一路退到原文件。
+      if (!env.probe().compressImage) {
+        self._shrinkPicked(picked, f, out, next)
+        return
+      }
       wx.compressImage({
         src: picked,
         quality: IMAGE_QUALITY,
@@ -1990,22 +2252,36 @@ Page({
     next()
   },
 
-  /** 页面上那块藏起来的 2d 画布（懒建 + 缓存）。没有画布能力回 null。 */
-  _shrinkCanvas: function () {
-    if (this._canvasNode !== undefined) return this._canvasNode || null
+  /**
+   * 页面上那块藏起来的 2d 画布（懒建 + 缓存）。没有画布能力回 null。
+   *
+   * ⚠️ **结果只能走回调**：`createSelectorQuery().exec(cb)` 的回调是逻辑层→渲染层
+   * 跑一个来回之后才回来的。旧实现把 `node` 写在回调里，却在 `exec()` 之后**同步**
+   * 读它 —— 那时它还是 null，而且这个 null 被缓存进 `_canvasNode`（首行
+   * `!== undefined` 直接返回），于是**整页生命周期一次都拿不到画布**，
+   * `_shrinkPicked` 的"钉死长边"一步从来没跑过：Android 上 compressImage 的
+   * quality 被系统忽略，压完还是几 MB，用户看到的是"这张图压完还有 NNNKB 太大"。
+   * 所以：结果只在回调里给，并且**拿到节点之后**才写缓存（失败也缓存 null，
+   * 只是不再重复查询）。
+   */
+  _shrinkCanvas: function (cb) {
+    var self = this
+    if (this._canvasNode !== undefined) {
+      cb(this._canvasNode || null)
+      return
+    }
     if (!env.probe().canvas) {
       this._canvasNode = null
-      return null
+      cb(null)
+      return
     }
-    var node = null
     wx.createSelectorQuery()
       .select('#drc-shrink')
       .fields({ node: true, size: true })
       .exec(function (res) {
-        node = res && res[0] ? res[0].node : null
+        self._canvasNode = res && res[0] ? res[0].node || null : null
+        cb(self._canvasNode)
       })
-    this._canvasNode = node
-    return node
   },
 
   /**
@@ -2016,48 +2292,49 @@ Page({
    */
   _shrinkPicked: function (path, meta, out, done) {
     var self = this
-    var canvas = this._shrinkCanvas()
-    if (!canvas) {
-      this._readAsBase64(path, meta, out, done, this)
-      return
-    }
-    wx.getImageInfo({
-      src: path,
-      success: function (info) {
-        var long = Math.max(info.width, info.height)
-        if (!long || long <= IMAGE_LONG_EDGE) {
-          self._readAsBase64(path, meta, out, done, self)
-          return
-        }
-        var scale = IMAGE_LONG_EDGE / long
-        var w = Math.max(1, Math.round(info.width * scale))
-        var h = Math.max(1, Math.round(info.height * scale))
-        var ctx = canvas.getContext('2d')
-        var img = canvas.createImage()
-        img.onload = function () {
-          canvas.width = w
-          canvas.height = h
-          ctx.drawImage(img, 0, 0, w, h)
-          wx.canvasToTempFilePath({
-            canvas: canvas,
-            fileType: 'jpg',
-            quality: IMAGE_QUALITY,
-            success: function (r) {
-              self._readAsBase64(r.tempFilePath, info, out, done, self)
-            },
-            fail: function () {
-              self._readAsBase64(path, meta, out, done, self)
-            },
-          })
-        }
-        img.onerror = function () {
-          self._readAsBase64(path, meta, out, done, self)
-        }
-        img.src = path
-      },
-      fail: function () {
+    this._shrinkCanvas(function (canvas) {
+      if (!canvas) {
         self._readAsBase64(path, meta, out, done, self)
-      },
+        return
+      }
+      wx.getImageInfo({
+        src: path,
+        success: function (info) {
+          var long = Math.max(info.width, info.height)
+          if (!long || long <= IMAGE_LONG_EDGE) {
+            self._readAsBase64(path, meta, out, done, self)
+            return
+          }
+          var scale = IMAGE_LONG_EDGE / long
+          var w = Math.max(1, Math.round(info.width * scale))
+          var h = Math.max(1, Math.round(info.height * scale))
+          var ctx = canvas.getContext('2d')
+          var img = canvas.createImage()
+          img.onload = function () {
+            canvas.width = w
+            canvas.height = h
+            ctx.drawImage(img, 0, 0, w, h)
+            wx.canvasToTempFilePath({
+              canvas: canvas,
+              fileType: 'jpg',
+              quality: IMAGE_QUALITY,
+              success: function (r) {
+                self._readAsBase64(r.tempFilePath, info, out, done, self)
+              },
+              fail: function () {
+                self._readAsBase64(path, meta, out, done, self)
+              },
+            })
+          }
+          img.onerror = function () {
+            self._readAsBase64(path, meta, out, done, self)
+          }
+          img.src = path
+        },
+        fail: function () {
+          self._readAsBase64(path, meta, out, done, self)
+        },
+      })
     })
   },
 
@@ -2185,9 +2462,12 @@ Page({
     var decision = e.currentTarget.dataset.decision
     var perm = this.data.pendingPermission
     if (!perm) return
-    this._stopCardTick()
     this.setData({ pendingPermission: null, running: decision !== 'reject' })
     this._renderBar()
+    // **这表两张卡共用**：提问卡还挂着就继续走秒（它在 data 里没被动过）。
+    // 无条件停表会把提问卡的倒数冻在那一刻 —— 用户以为还有 2 分钟，
+    // 而主机那边 300 秒一到就按"没答上"结掉了。
+    if (!this.data.pendingQuestion) this._stopCardTick()
     this.client.resolvePermission(this.data.sessionId, perm.requestId, decision)
   },
 

@@ -24,7 +24,11 @@ var PROTOCOL_VERSION = 1
  * 页面只需要分得清"拿到了 / 没拿到"，用 reject 会让每个调用点都要写 try/catch。
  */
 var HISTORY_TIMEOUT_MS = 15000
-/** 一次普通命令（目前只有新建会话）等回执的上限。比读历史短：创建是本地操作，不该慢。 */
+/**
+ * 一次普通命令等回执的上限。两条路都走它：新建会话（`cmd.new_session`，
+ * 本地操作不该慢）与发指令（`cmd.send_prompt`，要等主机把消息收进 dsh 的 inbox）。
+ * 所以它是"命令回执"的统一上限，不是"新建会话专用"。
+ */
 var COMMAND_TIMEOUT_MS = 12000
 
 class DrcClient {
@@ -83,7 +87,15 @@ class DrcClient {
   }
 
   // ── 启动 / 恢复 ───────────────────────────────────────────────────
-  /** 载入上次持久化的内容（server + psk + convId）。 */
+  /**
+   * 载入上次持久化的内容（server + psk + convId）。
+   *
+   * **这里绝不许抛**：调用点是 `app.js` 的 `App.onLaunch` → `getClient()`，
+   * 抛出去就是"小程序启动即失败、无提示、无法自愈"（真机表现是白屏/卡在启动页）。
+   * 而存储里的值可能是旧版本写的、也可能被人手动改过 —— psk 里混进一个非 base64
+   * 字符，`derivePskKey` 就会抛 InvalidCharacterError。所以派生包 try/catch，
+   * 失败就当成"没有可用的配对"：清存储 + 明说重新扫码。
+   */
   hydrate() {
     this.clientId = store.installId()
     var p = store.loadPairing()
@@ -94,8 +106,19 @@ class DrcClient {
       this.hostId = p.hostId || ''
       this.hostLabel = p.hostLabel || ''
       this._resume = p
-      this.kC2H = codec.derivePskKey(this.psk, 'c2h', this.convId)
-      this.kH2C = codec.derivePskKey(this.psk, 'h2c', this.convId)
+      try {
+        this.kC2H = codec.derivePskKey(this.psk, 'c2h', this.convId)
+        this.kH2C = codec.derivePskKey(this.psk, 'h2c', this.convId)
+      } catch (e) {
+        this._forgetPairing()
+        this.psk = ''
+        this.server = ''
+        this._setStatus('needs-pair', '本机保存的配对信息已损坏，请重新扫码配对')
+      }
+    } else if (store.loadPairingError()) {
+      // 记录存在但形状坏了（loadPairing 已经就地清掉）：也要说出来，
+      // 否则用户看到的是"这台机器从没配对过"，而真相是"你那把钥匙坏了"。
+      this._setStatus('needs-pair', '本机保存的配对信息已损坏，请重新扫码配对')
     }
     if (!this.server) this.server = store.serverUrl()
     return this
@@ -107,6 +130,11 @@ class DrcClient {
 
   /**
    * 打开 socket 并（重新）跑握手。
+   *
+   * 这是**配对入口**（扫码 / 粘贴 / 手输三条路最后都到这里），所以形状校验也在这：
+   * 非法输入就地拒绝并给一句中文，不放进网络来回 —— 更不放到 derivePskKey 里
+   * 变成一句英文异常（那时用户已经"配对上了"，却什么都做不了）。
+   *
    * @param {Object} opts { server?, psk?, token? } —— token 触发一次全新配对。
    */
   connect(opts) {
@@ -120,6 +148,19 @@ class DrcClient {
 
     if (!this.server) {
       this._setStatus('needs-pair', '请先扫码或填写中继服务地址')
+      return
+    }
+    if (!codec.isValidPairingServer(this.server)) {
+      this._setStatus('needs-pair', '中继地址必须以 ws:// 或 wss:// 开头')
+      return
+    }
+    if (this.psk && !codec.isValidPsk(this.psk)) {
+      this._setStatus('needs-pair', '配对密钥不合法（应为 base64 的 16 字节），请重新扫码')
+      return
+    }
+    if (opts.token && !codec.isValidPairingToken(this._pendingToken)) {
+      this._pendingToken = null
+      this._setStatus('needs-pair', '配对码必须是主机显示的 6 位数字')
       return
     }
     if (!this.clientId) this.clientId = store.installId()
@@ -168,14 +209,26 @@ class DrcClient {
    * 帧名是冻结的（F1），而中继那条路本来就在。
    *
    * 顺序不能反：帧要靠 socket 发出去，`disconnect()` 之后就发不出了。
+   *
+   * ⚠️ **退避重连期也要断得掉**：`sendThenClose` 在 `_task` 已经没了（socket 断了、
+   * 重连还排在定时器上）时直接 `return false`，而且**什么都不清**（不设 `_manualClose`、
+   * 不清 `_reconnectTimer`）。那些返回值以前被丢掉，紧接的 `this.sock = null` 就把它
+   * 变成**孤儿 socket**：定时器到点自己重连，之后 hello-ok 还会把"已解除配对"
+   * 改写成"请输入主机上的 6 位配对码"（探针实测）。所以 false 就补一次 `close()` ——
+   * 那是唯一会停表（`_manualClose`）的入口。
    */
   unpair() {
     if (this.sock && this.convId) {
-      this.sock.sendThenClose({ t: 'session-leave', sessionId: this.convId, clientId: this.clientId })
+      if (!this.sock.sendThenClose({ t: 'session-leave', sessionId: this.convId, clientId: this.clientId })) {
+        this.sock.close()
+      }
     } else {
       this.disconnect()
     }
     this.sock = null
+    // 正在配对中的那半程也要一起作废：留着它，下一次 hello-ok 会用旧 token 再发一次
+    // `pair-begin-client`，用户看到的是"解除配对之后又自己配上了"。
+    this._pendingToken = null
     this._forgetPairing()
     this.psk = ''
     this._setStatus('needs-pair', '已解除配对')
@@ -228,8 +281,16 @@ class DrcClient {
       this.emit({ kind: 'error', message: '尚未配对，无法发送指令' })
       return false
     }
-    var pairing = this._resume || { psk: this.psk, convId: this.convId, nonceCounter: 0 }
-    var nonce = store.nextNonceFor(pairing)
+    // **绝不回退 nonce 计数器**（codec.js:119-121 的不变式：key 绑定 psk+会话+方向，
+    // 计数器按 installId 单调递增，nonce 因此绝不复用）。曾经这里兜底一个
+    // `{nonceCounter: 0}`：`_resume` 一旦缺失，每条命令都从 0 起算 —— 连发两条
+    // 相同明文会得到**完全相同的 24B nonce 与相同密文**（探针实测），
+    // 密钥流复用是这一层最贵的一类错误。缺 `_resume` 就拒绝发送，宁可失败。
+    if (!this._resume) {
+      this.emit({ kind: 'error', message: '配对记录不完整，不能安全地发送指令：请重新扫码配对' })
+      return false
+    }
+    var nonce = store.nextNonceFor(this._resume)
     var rec = codec.seal(this.kC2H, cmd, nonce)
     return this.sendControl({
       t: 'enc',
@@ -264,9 +325,19 @@ class DrcClient {
         return
       case 'pair-fail':
         this._pendingToken = null
+        // **旧的配对不能留着**：扫码时 `connect({psk})` 已经把 `this.psk` 换成新扫到
+        // 的那把，旧 convId 对应的密钥再也派生不出来；而 `isPaired()` 只看 convId 与
+        // kC2H（还是旧的那两把），于是界面显示"已配对"、实际什么都发不出去。
+        // 清干净 → 页面据此回到扫码页（sessions 页的 needs-pair 分支）。
+        this._forgetPairing()
+        this.psk = ''
         this._setStatus('needs-pair', '配对失败：' + translatePairFail(f.reason))
         return
       case 'peer-left':
+        // 中继按**会话**维护成员表：别的会话的主机离开与本机这次配对无关。
+        // 不校验归属就会把"另一条会话没了"当成"这台主机没了"，
+        // 用户被无端踢回扫码页（多会话后台下这是真会发生的形状）。
+        if (f.sessionId && f.sessionId !== this.convId) return
         // 主机掉了，会话没了 —— 只能重新配对
         this._forgetPairing()
         this._setStatus('needs-pair', '主机已断开，请重新配对')
@@ -391,9 +462,9 @@ class DrcClient {
     } else if (payload.t === 'ev.keep_awake_state') {
       this.keepAwake = payload
     } else if (payload.t === 'ev.model') {
-      // 模型是全局的（不带 sessionId），与防休眠同一层簿记。
-      // **原样存下整帧**，尤其 canSwitch：页面要靠它决定下拉是���点还是置灰，
-      // 自己在小程序里推断会出现「点了没反应」。
+      // 模型帧现在**带 sessionId**（wire 1.8.1 起必填），与其他事件走同一句会话过滤，
+      // 页面按会话决定要不要显示（chat 页的 `_onEvent` 就是这么判的）。
+      // 这里与防休眠同一层簿记：**原样存下整帧**，不替页面做判断。
       this.model = payload
     }
     this.emit({ kind: 'payload', payload: payload })
@@ -420,11 +491,6 @@ class DrcClient {
   }
 
   /**
-   * 发一条指令。images 是可选附件（wire 1.3.0 起）：本机压缩过的 jpeg，
-   * **只映射协议要的字段**——本地路径（path）之类都不上线。
-   * 一条最多 4 张（协议层上限）；调用方（chat 页）已经按这个数收过一轮。
-   */
-  /**
    * 发一条指令。images / files 都是可选附件（wire 1.3.0 起，files 是 1.6.0 加的）。
    *
    * 两类附件在协议里就是两个字段，**只映射协议要的那几个字段**——本机路径（path）
@@ -432,7 +498,7 @@ class DrcClient {
    *
    * 两类的条数上限都是 4（协议层同一个数）；调用方（chat 页）已经按这个数收过一轮。
    */
-  sendPrompt(sessionId, text, images, files, cmdId, queueId) {
+  sendPrompt(sessionId, text, images, files, cmdId) {
     var cmd = {
       t: 'cmd.send_prompt',
       // 调用方可以自带 cmdId（要等回执时）；不带就自己分配。
@@ -444,9 +510,6 @@ class DrcClient {
       cmd.files = files.slice(0, 4).map(function (a) {
         return { name: a.name, mediaType: a.mediaType, data: a.data }
       })
-      // 排队要用（2026-10-05 用户：排队要双向同步、手机要能删）。
-      // 手机编的号，主机原样存、原样回、原样拿来删——删的时候对得上靠它。
-      if (queueId) cmd.queueId = String(queueId)
     }
     if (images && images.length) {
       cmd.images = images.slice(0, 4).map(function (a) {
@@ -470,7 +533,7 @@ class DrcClient {
    *
    * @returns Promise<{ok: boolean, message?: string}>。`ok:false` 一定带可读原因。
    */
-  sendPromptReceipt(sessionId, text, images, files, queueId) {
+  sendPromptReceipt(sessionId, text, images, files) {
     var self = this
     if (this.status !== 'online') {
       return Promise.resolve({
@@ -501,7 +564,7 @@ class DrcClient {
       }
       timer = setTimeout(done, COMMAND_TIMEOUT_MS)
       self._cmdWaiters[cmdId] = done
-      if (!self.sendPrompt(sessionId, text, images, files, cmdId, queueId)) done(null)
+      if (!self.sendPrompt(sessionId, text, images, files, cmdId)) done(null)
     })
   }
 
