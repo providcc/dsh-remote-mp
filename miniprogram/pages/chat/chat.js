@@ -354,7 +354,9 @@ Page({
     this._renderBar()
     this.client.listSessions()
     this._maybeLoadHistory()
-    // 排队是「以 dsh 为准」：进会话/回前台主动问一次，别等主机恰好有变化。
+    // 挂起的审批/提问是「以 dsh 为准」：进会话主动拉一次，别等主机恰好有变化。
+    // 断链期间错过的那一帧，靠这一拉补回来（同一 requestId，页面按卡覆盖）。
+    this.client.getPending(this.data.sessionId)
   },
 
   /**
@@ -550,6 +552,10 @@ Page({
         this._wasOffline = false
         this._historyStarted = false
         this._historyBusy = false
+        // 断链期间世界可能变了：run_state 的跳变帧错过就没了，挂着的瞬时提示
+        // （正在重试/压缩中）可能早已过期。清掉它，真相由随后的列表与历史重建——
+        // 还在跑的话新的提示帧会再来，不会丢。
+        if (this.data.notice) this.setData({ notice: '' })
         // **复位之后必须自己再触发一次**（2026-10-06 取证）。
         //
         // 开头那次 `_maybeLoadHistory()` 在这一刻还看到 `_historyStarted === true`，
@@ -565,6 +571,8 @@ Page({
         // 断了多久不知道，但主机那边的会话状态一定变了 —— 顶栏那个
         // 「运行中」要重新问一次，否则它会一直停在上一次的值上。
         this.client.listSessions()
+        // 挂起的卡也要重新问一次：断链期间挂上的审批/提问，那一帧已经过去了。
+        this.client.getPending(this.data.sessionId)
       }
       // 记下"曾经断过"，onHide/unload 之外的断开都走上面那条。
       if (evt.status === 'connecting' || evt.status === 'idle') this._wasOffline = true
@@ -648,6 +656,10 @@ Page({
     for (var i = 0; i < rows.length; i++) {
       if (rows[i].id !== this.data.sessionId) continue
       var running = rows[i].running === true
+      // 列表是"这条会话此刻在不在跑"的权威来源：run_state 是跳变帧，错过就没了
+      // （退后台时那一帧过去，回来后"正在重试"会永远挂着——2026-10-06 用户实测）。
+      // 列表说没跑而提示还在，提示就是过期遮罩，清掉它。
+      if (!running && this.data.notice) this.setData({ notice: '' })
       if (running === this.data.running) return
       this.setData({ running: running })
       if (running) {

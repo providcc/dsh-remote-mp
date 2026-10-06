@@ -108,7 +108,7 @@
         <view class="host-name ellipsis">{{hostLabel || '主机'}}</view>
         <view class="pill {{statusTheme}}">{{statusLabel}}</view>
       </view>
-      <view class="host-sub ellipsis">{{statusText || '已就绪'}}</view>
+      <view class="host-sub ellipsis">{{statusText || '已就绪'}}{{linkAgeText}}</view>
 
       <!-- 解除配对：**在这张卡上**（2026-10-04 用户要求从底部挪进来）。
            这张卡写的就是"现在连的是哪台主机、通不通"，"不要这台了"是它的动作，
@@ -121,6 +121,36 @@
 
     <!-- 分区标题右侧放「新建会话」：它是这一页的主动作，跟着列表走。
          不隐藏而是在离线时置灰 —— 一个会突然消失的入口比一个说明白的禁用好懂得多。 -->
+    <!-- G1 待办优先：挂起的审批/提问抢首屏。每件一行并带是哪条会话，
+         点开即进那条会话的上下文（onOpen 同一套）。没有时整区不占地方。 -->
+    <block wx:if="{{pendingCount}}">
+      <view class="section-title">
+        <text>等你处理</text>
+        <text class="section-count">{{pendingCount}}</text>
+      </view>
+      <view class="card">
+        <block wx:for="{{pending}}" wx:key="id">
+          <view wx:if="{{index > 0}}" class="sess-line"></view>
+          <view
+            class="sess"
+            hover-class="pressed"
+            hover-stay-time="80"
+            data-id="{{item.id}}"
+            data-title="{{item.title}}"
+            bindtap="onOpen">
+            <view class="sess-bar primary"></view>
+            <view class="sess-main">
+              <view class="sess-head">
+                <view class="sess-title ellipsis">{{item.title}}</view>
+                <view class="sess-badge primary">
+                  <text>{{item.badgeText}}</text>
+                </view>
+              </view>
+            </view>
+          </view>
+        </block>
+      </view>
+    </block>
     <view class="section-title">
       <text>会话</text>
       <text class="section-count">{{sessions.length}}</text>

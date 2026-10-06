@@ -98,6 +98,17 @@ function pad2(n) {
 }
 
 /**
+ * 距上一帧多久（G5 显示用，前导空格由调用方拼在 host-sub 那行后面）。
+ * 从不说内容，只说时间——零知识承诺下这是唯一能说的。
+ */
+function linkAge(ms) {
+  if (!(ms >= 0)) return ''
+  if (ms < 10000) return ' · 刚刚有消息'
+  if (ms < 60000) return ' · ' + Math.floor(ms / 1000) + '秒前有消息'
+  return ' · ' + Math.floor(ms / 60000) + '分钟前有消息'
+}
+
+/**
  * 会话摘要下发的是 ISO 字符串（DESIGN.md F7）。原来直接 `slice(11,19)` 只显示
  * 时分秒 —— 昨天和今天的 `14:32` 长得一模一样，看不出这个会话多久没动了。
  * 按「今天 / 昨天 / 今年 / 更早」分档，长度可控且一眼能判断新旧。
@@ -128,10 +139,15 @@ Page({
   data: {
     paired: false,
     sessions: [],
+    /** G1 待办优先：在等你处理的会话（点开即进那条会话），没有时整区不占地方 */
+    pending: [],
+    pendingCount: 0,
     status: 'idle',
     statusText: '',
     statusLabel: '未连接',
     statusTheme: 'default',
+    /** G5：最近一帧什么时候到的（只说时间不说内容），拼在主机卡那行后面 */
+    linkAgeText: '',
     hostLabel: '',
     /** 正在连/正在配对：主机卡上要有可见的动静，别让用户以为卡死了 */
     connecting: false,
@@ -190,6 +206,7 @@ Page({
       return
     }
     this.setData({ paired: true })
+    this._startLinkTick()
     if (this.client.status === 'online') {
       this.refresh()
     } else {
@@ -198,6 +215,7 @@ Page({
   },
 
   onHide: function () {
+    this._stopLinkTick()
     if (this._off) {
       this._off()
       this._off = null
@@ -205,6 +223,7 @@ Page({
   },
 
   onUnload: function () {
+    this._stopLinkTick()
     if (this._off) {
       this._off()
       this._off = null
@@ -219,6 +238,8 @@ Page({
   },
 
   _onEvent: function (evt) {
+    // 每一帧载荷都摸一下链路活跃度（G5）：只记时间不记内容。
+    if (evt.kind === 'payload') this._touchLink()
     if (evt.kind === 'payload' && evt.payload.t === 'ev.session_changed') {
       this._renderSessions(this.client.sessions)
     } else if (evt.kind === 'payload' && evt.payload.t === 'ev.keep_awake_state') {
@@ -289,18 +310,66 @@ Page({
 
   _renderStatus: function (status, text) {
     var v = statusView(status)
-    this.setData({
+    var patch = {
       status: status,
       statusText: text || '',
       statusLabel: v.label,
       statusTheme: v.theme,
       connecting: status === 'connecting' || status === 'pairing',
-    })
+    }
+    // 离线后"几秒前" frozen 在那里就是假事实：帧已经不来了，"5 秒前有消息"会一直
+    // 停在 5 秒。状态走掉就清掉它，连上后第一帧自然会重建。
+    if (status !== 'online') patch.linkAgeText = ''
+    this.setData(patch)
+  },
+
+  /**
+   * 链路活跃度（PRODUCT.md G5：手机"连接状态"那一页要能回答"我远程还管得住吗"）。
+   *
+   * 只记"最近一帧什么时候到的"，**不含任何正文**——零知识承诺下这是诊断面允许说的
+   * 全部。`_touchLink` 在每一帧载荷上盖戳；`_startLinkTick` 每 15 秒按戳重算一次
+   * 显示（"· 5 秒前有消息"），拼在主机卡那行后面。没有帧时戳是空的，显示空；
+   * 状态走掉（离线/解配）时显示清掉——frozen 的"5 秒前"等于假事实。
+   * tick 在 onHide/onUnload 停掉，不许带到别的页。
+   */
+  _touchLink: function () {
+    this._lastPayloadAt = Date.now()
+    this._paintLinkAge()
+  },
+
+  _paintLinkAge: function () {
+    if (this.data.status !== 'online' || !this._lastPayloadAt) {
+      if (this.data.linkAgeText) this.setData({ linkAgeText: '' })
+      return
+    }
+    var text = linkAge(Date.now() - this._lastPayloadAt)
+    if (text !== this.data.linkAgeText) this.setData({ linkAgeText: text })
+  },
+
+  _startLinkTick: function () {
+    this._stopLinkTick()
+    var self = this
+    this._linkTimer = setInterval(function () {
+      self._paintLinkAge()
+    }, 15000)
+  },
+
+  _stopLinkTick: function () {
+    if (this._linkTimer) {
+      clearInterval(this._linkTimer)
+      this._linkTimer = null
+    }
   },
 
   /**
    * 归档会话**不显示**：主机对它们的每一步都直接拒绝，列出来只会让人点了才发现没用。
    * 但也不能悄无声息地消失 —— 底部留一句「已隐藏 N 个」，否则用户会以为会话丢了。
+   *
+   * G1 待办优先（PRODUCT.md §5）：挂起的审批/提问是唯一值得抢首屏的东西——
+   * 它阻塞着远端一条正在跑的回合。所以 `awaiting-permission` / `awaiting-answer`
+   * 的会话在列表上方另起一区「等你处理」，每件一张行并带是哪条会话，点开即进
+   * 那条会话的上下文（onOpen 同一套）。下面完整列表照旧，两边是同一批数据，
+   * 不是两份真相。
    */
   _renderSessions: function (list) {
     var rows = []
@@ -320,6 +389,7 @@ Page({
         badgeText: b.text,
         badgeTheme: b.theme,
         running: b.theme === 'primary',
+        pending: s.state === 'awaiting-permission' || s.state === 'awaiting-answer',
         // sortAt 只参与排序，不进 setData（渲染层用不到，别让它两处口径）
         sortAt: new Date(s.updatedAt).getTime() || 0,
         updatedAt: formatTime(s.updatedAt),
@@ -327,6 +397,7 @@ Page({
     }
     rows.sort(sessionRank)
     var items = []
+    var pending = []
     for (var j = 0; j < rows.length; j++) {
       var r = rows[j]
       items.push({
@@ -339,9 +410,12 @@ Page({
         running: r.running,
         updatedAt: r.updatedAt,
       })
+      if (r.pending) pending.push({ id: r.id, title: r.title, badgeText: r.badgeText })
     }
     this.setData({
       sessions: items,
+      pending: pending,
+      pendingCount: pending.length,
       hiddenArchived: hidden,
       hiddenText: hidden ? '已隐藏 ' + hidden + ' 个归档会话' : '',
     })

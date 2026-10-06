@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-mp",
-  "version": "1.1.26",
+  "version": "1.1.27",
   "private": true,
   "description": "DSH Remote Control —— 微信小程序控制端：扫码配对主机，发指令、看流式输出、回答审批。",
   "license": "MIT",
@@ -10,14 +10,19 @@
     "url": "git+https://github.com/providcc/dsh-remote-mp.git"
   },
   "homepage": "https://github.com/providcc/dsh-remote-mp#readme",
-  "bugs": "https://github.com/providcc/dsh-remote-mp/issues",
+  "bugs": {
+    "url": "https://github.com/providcc/dsh-remote-mp/issues"
+  },
   "keywords": [
     "dsh",
     "deepseek-harness",
+    "deepseek",
     "remote-control",
+    "relay",
+    "websocket",
     "wechat",
     "miniprogram",
-    "e2ee"
+    "e2e-encryption"
   ],
   "engines": {
     "node": ">=20"

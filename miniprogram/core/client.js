@@ -405,6 +405,21 @@ class DrcClient {
   }
 
   /**
+   * 拉取还挂着的审批/提问（wire 1.9.0 起，fire-and-forget）。
+   *
+   * 审批/提问卡是"一次性"的一帧：退后台、断线、停在列表页时错过就没了。
+   * 主机把 `pending` 里还挂着的按原请求帧重发（同一 `requestId`，页面按卡覆盖），
+   * 没有只回 `ev.result{ok:true}`。老主机不认这条命令（静默丢弃），
+   * 所以这里不做 waiter、不弹错——收不到就当没有。
+   * 调用点：chat 页 onShow（进会话）与重连成功（世界可能变了）。
+   */
+  getPending(sessionId) {
+    var cmd = { t: 'cmd.get_pending', cmdId: this.newCmdId() }
+    if (sessionId) cmd.sessionId = sessionId
+    return this.sendCmd(cmd)
+  }
+
+  /**
    * 发一条指令。images 是可选附件（wire 1.3.0 起）：本机压缩过的 jpeg，
    * **只映射协议要的字段**——本地路径（path）之类都不上线。
    * 一条最多 4 张（协议层上限）；调用方（chat 页）已经按这个数收过一轮。

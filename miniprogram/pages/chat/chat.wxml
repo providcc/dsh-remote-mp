@@ -24,8 +24,10 @@
   <!-- 瞬时提示（重试 / 压缩，见 chat.js 的 notice）。
        只在"这一轮"里有意义的一行字：run-state 回到 idle 就清掉，
        不进块流（半小时后再看"正在重试 2/5"毫无意义）。
+       有待办时不单独占一行（两行状态叠在一起互相抢，2026-10-06 用户报"冲突"）——
+       那时它显示在待办条的状态位（下面那行），一屏只说一件事。
        没有提示时整块不占地方。 -->
-  <view wx:if="{{notice}}" class="notice">
+  <view wx:if="{{notice && !todos.length}}" class="notice">
     <text class="notice-text ellipsis">{{notice}}</text>
   </view>
 
@@ -43,7 +45,11 @@
     <view class="todo-bar" hover-class="pressed" hover-stay-time="80" bindtap="onToggleTodos">
       <text class="todo-count">待办 {{todoDone}}/{{todos.length}}</text>
       <view class="todo-vline"></view>
-      <text wx:if="{{todoRunning}}" class="todo-running">{{todoRunningText}}</text>
+      <!-- 状态位一次只说一件事：瞬时提示（重试/压缩中）优先于"在进行哪条"，
+           否则两行状态叠在一起（2026-10-06 用户报"冲突"）。提示走了，
+           原来那句"在进行哪条"还在，不丢信息。 -->
+      <text wx:if="{{notice}}" class="todo-running">{{notice}}</text>
+      <text wx:elif="{{todoRunning}}" class="todo-running">{{todoRunningText}}</text>
       <view class="todo-gap"></view>
       <view class="todo-toggle">
         <text class="todo-toggle-text">{{todosOpen ? '收起' : '展开'}}</text>

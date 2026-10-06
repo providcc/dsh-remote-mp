@@ -1,10 +1,15 @@
 # dsh-remote-mp
 
 [![CI](https://github.com/providcc/dsh-remote-mp/actions/workflows/ci.yml/badge.svg)](https://github.com/providcc/dsh-remote-mp/actions/workflows/ci.yml)
+[![Platform: WeChat Mini Program](https://img.shields.io/badge/WeChat-Mini%20Program-07C160.svg)](./project.config.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 **DSH Remote Control** 的客户端——原生微信小程序。扫码配对一台正在跑 DeepSeek Harness 的桌面主机，
 然后在手机上**发指令、看流式输出、回答审批**。载荷级端到端加密：中继看不到任何明文。
+
+> EN: the client for DSH Remote Control — a native WeChat Mini Program. Scan to pair with
+> your DeepSeek Harness desktop host, then send prompts, watch streaming output and answer
+> approvals from your phone. Payload-level end-to-end encrypted; the relay sees no plaintext.
 
 > **状态：前端仍在改造中。** 本仓当前是小程序源码的一份**快照**（自开发仓 `mp/` 抽取）。
 > 界面与交互还在迭代，目录与接口可能随改造调整；功能链路本身（配对、指令、流式、审批）是通的。
@@ -63,8 +68,9 @@ dsh-remote-mp/
    （必须是已备案域名 + 有效证书，且只能用 `wss://`）。
 3. **详情 → 本地设置** → 勾选「不校验合法域名、web-view、TLS 版本以及 HTTPS 证书」
    （开发期连 `ws://127.0.0.1:8787` 必需）。
-4. 主机侧点 DSH 状态栏那颗 `dsh-remote-control` pill → 按「生成配对码」，
-   手机上扫码即连（`/drc` 命令 2026-10-03 已整条删除，pill 是唯一的配对入口）。
+4. 主机侧点 DSH 状态栏那颗 `dsh-remote-control` pill，未配对时点开就是二维码页，
+   手机上扫码即连（码过期点右上角「刷新」；`/drc` 命令 2026-10-03 已整条删除，
+   pill 是唯一的配对入口）。
 
 `miniprogram_npm/tdesign-miniprogram` 是按依赖闭包裁剪过的预构建产物，**不要**在工具里点"构建 npm"。
 升级 TDesign 的做法见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)。
