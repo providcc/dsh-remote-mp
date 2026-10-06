@@ -223,6 +223,15 @@ Page({
       this._renderSessions(this.client.sessions)
     } else if (evt.kind === 'payload' && evt.payload.t === 'ev.keep_awake_state') {
       this._renderKeepAwake(evt.payload)
+    } else if (evt.kind === 'payload' && evt.payload.t === 'ev.question_request') {
+      // 停在列表页时 chat 页不在（小程序一次只活一页），提问卡没有地方弹。
+      // 静默吞掉 = 主机阻塞等回答而手机毫无痕迹（与 chat 页跨会话那句同因）。
+      // 不弹卡（卡属于某条会话），但必须让人知道：点进对应会话即收原卡。
+      wx.showToast({ title: '主机在另一条会话里提问', icon: 'none' })
+    } else if (evt.kind === 'payload' && evt.payload.t === 'ev.permission_request') {
+      // 审批与提问同一性质（主机阻塞等决定，180 秒超时自动拒绝），对称处理。
+      wx.showToast({ title: '主机在另一条会话里等审批', icon: 'none' })
+    } else if (evt.kind === 'status') {
     } else if (evt.kind === 'status') {
       this._renderStatus(evt.status, evt.text)
       // 配对成功：状态一变，wxml 的 `wx:if` 分支自己就切到会话列表了。
