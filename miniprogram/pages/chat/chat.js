@@ -357,6 +357,8 @@ Page({
     this._scrollH = 0
     /** 最近一次真实滚动到的位置。「回到最新」要靠它判断"还在往底部走还是用户在回拖"。 */
     this._scrollTop = 0
+    /** 重连补读完要强制回底部（见 _onEvent 的重连分支）。读完即消费。 */
+    this._pendingScrollBottom = false
     this._draining = false
     this._historyBusy = false
     this._historyStarted = false
@@ -621,7 +623,29 @@ Page({
         //
         // 此刻三个前置条件全满足：status 已是 'online'、_historyStarted 刚复位、
         // _historyBusy 刚复位。
+        // **复位之后必须自己再触发一次**（2026-10-06 取证）。
+        //
+        // 开头那次 `_maybeLoadHistory()` 在这一刻还看到 `_historyStarted === true`，
+        // 直接 return 了——而它全页只有两个调用点（onShow 与这里），不重新触发
+        // 就**永远不会再读历史**。2026-10-05 那次"修复"只复位、不触发，整段是
+        // 彻底的空操作：断链期间主机上跑完的步骤、工具、回复一条都补不回来，
+        // 于是页面活着、顶栏亮着，**消息流从此静止**。
+        //
+        // 此刻三个前置条件全满足：status 已是 'online'、_historyStarted 刚复位、
+        // _historyBusy 刚复位。
         this._maybeLoadHistory()
+        // **重连后直接到底部**（2026-06 用户拍板：重连与重新进入都到底部，
+        // 不记住"读到哪儿"）。
+        //
+        // 原来的行为是重读历史时 `firstPage=false` → `noScroll` → 停在原处。
+        // 那对"继续读刚才那段"是对的，但断链期间主机上很可能已经跑完了一整轮，
+        // 停在旧位置等于让用户以为没收到新东西——而这一页的约定就是"最新在最底"。
+        //
+        // 必须**先把跟随状态翻回来**：`_commit` 里那句 `if (this._autoScroll)`
+        // 是总闸，用户正在回看时它是关着的，只置 pending 标记根本不会滚。
+        this._autoScroll = true
+        this.setData({ atBottom: true })
+        this._pendingScrollBottom = true
         // 断了多久不知道，但主机那边的会话状态一定变了 —— 顶栏那个
         // 「运行中」要重新问一次，否则它会一直停在上一次的值上。
         this.client.listSessions()
@@ -835,6 +859,20 @@ Page({
     this._dismissKeyboard()
   },
 
+  /**
+   * 又开始产出内容了 → 清掉瞬时提示（重试 / 压缩）。
+   *
+   * **刻意不在任何定时器里做**：提示的消失必须由"事情真的过去了"驱动，
+   * 而不是"过了一会儿"。用计时器清，用户会在答案还在滚的时候看到提示先没，
+   * 那是另一种形式的谎。
+   *
+   * 空闲时不碰：那一轮本来就没在跑，提示留给 `_onRunState` 回 idle 时清。
+   */
+  _clearNoticeIfProducing: function () {
+    if (!this.data.notice || !this.data.running) return
+    this.setData({ notice: '' })
+  },
+
   // ── 历史：打开会话时把主机上已有的内容读进来 ───────────────────────
   /**
    * 该不该现在去读第一页。
@@ -915,7 +953,11 @@ Page({
         if (firstPage && self.data.running) {
           merged = self._ensureThinkOpen(merged)
         }
-        self._commit(merged, { noScroll: !firstPage })
+        // 重连后强制回底部：`_commit` 的 noScroll 是"翻更早一页时别把用户甩下去"，
+        // 断链重读不属于那一类——它要的是"最新在最底"。
+        var forceBottom = !!(self._pendingScrollBottom && !first)
+        self._pendingScrollBottom = false
+        self._commit(merged, { noScroll: !firstPage && !forceBottom })
         // 待办快照：只应用**第一页**（最新一页）——更早页的快照是过期的，
         // 应用它等于把用户看到的清单往回拨。实时帧已经到过（_todoLive）就
         // 一律不应用：后到者胜，历史不许盖实时。
@@ -1120,6 +1162,15 @@ Page({
 
   // ── 流式 delta：先合并，按帧刷 ────────────────────────────────────
   _queueDelta: function (p) {
+    // **重试一旦成功，那句提示就必须消失**（2026-06 用户复访报的第 2 条）。
+    //
+    // 原先只在 `_onRunState` 回到 idle 时清。但重试成功往往发生在**这一轮还没结束**
+    // 的时候：模型重试成功 → 继续这一轮 → 开始出字。那条「正在重试 2/5」就一直挂着，
+    // 用户看着答案一行行出来，头上却写着"正在重试"。
+    //
+    // 判据用"**又producing了**"而不是时间：任何新的正文/工具产出都说明那个瞬时状态
+    // 已经过去。这条对压缩同样成立——压缩结束后正文开始流，提示就该收。
+    this._clearNoticeIfProducing()
     var buf = this._deltaBuf
     var e = buf[p.messageId]
     if (!e) {
@@ -1166,6 +1217,27 @@ Page({
         return
       }
       delete this._userEcho[messageId]
+      // **同一条消息主机会回传两次**（2026-10-06 真机取证）：
+      // `agent/inbox/spliced`（排队时）与 `user/message`（落定时）各一条，
+      // 两条带的是**同一个内核 messageId**（session log seq4155/seq4179 同为 f71ae5a5…）。
+      //
+      // 第一次 `_onUserEcho` 把本地回显标成 confirmed，第二次就找不到"未确认的那条"了
+      // ——而它兜底的动作是**再画一个一样的气泡**（`chat.js:1322`），
+      // 于是用户 2026-10-06 截图里第 3 轮出现两条一模一样的用户消息。
+      // 主机侧排队的消息（用户在 DSH 桌面里敲的）同样中招：本地没有回显，
+      // 两次都走"追加"分支。
+      //
+      // 所以去重键是 **messageId**，不是文本：同一条消息只结算一次。
+      if (!this._echoSettled) this._echoSettled = {}
+      if (this._echoSettled[messageId]) return
+      this._echoSettled[messageId] = true
+      // 这个表会随会话变长，只保留最近的一批：超出就清空重来。
+      // 代价是极老的消息再回传一次可能又画一遍 —— 那比一条常驻的消息表划算得多。
+      this._echoSettledCount = (this._echoSettledCount || 0) + 1
+      if (this._echoSettledCount > 300) {
+        this._echoSettled = {}
+        this._echoSettledCount = 0
+      }
       if (acc) this._onUserEcho(acc)
       return
     }
@@ -1324,6 +1396,8 @@ Page({
 
   // ── 工具事件：按 callId 在步骤组里找到那一条，原地更新 ─────────────
   _onTool: function (p) {
+    // 工具又跑起来了 = 重试/压缩那个瞬时状态已经过去（见 _queueDelta 里的同一段）。
+    this._clearNoticeIfProducing()
     this._commit(this._applyTool(this.data.blocks, p, true))
   },
 
@@ -1591,6 +1665,18 @@ Page({
       // 留着"正在重试 2/5"会让用户以为下一轮还没开始。压缩失败那句也在这里清 ——
       // 它在失败那一刻已经说过那句话，idle 时再挂着就是在说一件过去的事。
       if (this.data.notice) patch.notice = ''
+      // 待办是"**这一轮**在干什么"的清单：一轮结束了还挂着，用户看到的是一件
+      // 已经做完的事（2026-06 用户复访报的第 1 条：待办全做完、dsh 都关闭了，
+      // mp 端还在显示）。内核**不保证**在收尾时再发一帧空清单，所以不能只靠它。
+      if (this.data.todos.length) {
+        patch.todos = []
+        patch.todoDone = 0
+        patch.todoRunning = 0
+        patch.todoRunningText = ''
+        patch.todosOpen = false
+      }
+      // 清掉待办也要放开这条闩锁：否则这一页实例之后的历史回放会拿旧快照盖回来。
+      this._todoLive = false
     }
     this.setData(patch)
     if (running) {
