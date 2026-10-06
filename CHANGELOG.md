@@ -7,6 +7,19 @@
 
 ## [未发布]
 
+- 修「发送一条大消息就掉线」（2026-10-06 审计）：附件那两道预算闸只算**附件**，
+ 正文长度没人管，而中继那条 1MB 硬帧上限是**整帧**算的。实测附件顶格 512KB +
+ 正文 90KB → 线上帧 1 055 304B > 1 MiB ⇒ 中继以 1009 关掉整条连接，用户看到的是
+ "发出去就掉线"。现在发送前按线格式实算一遍（载荷 JSON → 密封 ×4/3 → 信封），
+ 超预算就拦下并说清该减什么，且**拦在清空输入框之前**（否则用户要重打一遍）。
+- 修「文件附件每一个都读不出来」（用户 2026-10-06 实测：选一个 txt，toast 提示
+ "这个文件读不出来"）：`_acceptPickedFiles` 读的是 `f.tempFilePath`，而
+ `wx.chooseMessageFile` 的路径字段叫 **`path`**（`tempFilePath` 是 `chooseMedia` /
+ `chooseImage` 的）。于是 `filePath` 恒为 undefined，这条功能一次都没通过。
+ 现按 `f.tempFilePath || f.path` 取，两个入口都覆盖。
+- 修文件类型标签：真 API 的 `ChooseFile.type` 是 `'video'|'image'|'file'` 的
+ **类别**，不是扩展名。原先直接拿它当扩展名（`report.pdf` 会显示成 `file`）。
+ 现从文件名取扩展名（新增 `extensionOf`：大写归一、只取最后一段、无扩展名退回类别）。
 - 修「发送的消息重复显示」（用户 2026-10-06 截图）：同一条消息主机会回传两次
  （`agent/inbox/spliced` 排队 + `user/message` 落定，带**同一个**内核 messageId），
  而 `_onUserEcho` 第一次把本地回显标成已确认、第二次找不到未确认的那条就**再画一个

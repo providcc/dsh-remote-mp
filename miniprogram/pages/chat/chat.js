@@ -106,6 +106,55 @@ var MAX_ATTACH_BYTES = 512 * 1024
 var MAX_ATTACH_TOTAL_BYTES = 512 * 1024
 var MAX_IMAGE_BYTES = 512 * 1024
 var MAX_IMAGE_TOTAL_BYTES = 512 * 1024
+
+/**
+ * 一条出站 `cmd.send_prompt` 的**线上字节**估算与它要面对的预算。
+ *
+ * 2026-10-06 审计补的：附件那两道闸（`MAX_ATTACH_*`）只算**附件**，于是
+ * "512KB 附件 + 一段很长的正文"这个组合是没人管的。实测（`e2e` 侧同式复算）：
+ * 附件 512KB + 正文 90KB → 线上帧 1 055 304 字节 > 中继的 `ws.maxPayload` 1 MiB
+ * ⇒ 中继以 **1009** 关掉**整条连接**。用户看到的是"发出去就掉线"，而这一页的注释
+ * 里写着"绝不能让它变成莫名掉线"——闸在那里，只是不在这条路上。
+ *
+ * 算式与线格式一一对应（改动必须同时改这四行与 `core/codec.js` 的 `seal`）：
+ *   载荷 JSON ≈ 固定开销 + utf8(text) + Σ(名字/类型 + base64(附件原始字节))
+ *   密封 = base64(载荷JSON ‖ nonce(24B) ‖ MAC(16B))  →  ×4/3
+ *   线上帧 = 密封结果 + 信封（t / sessionId / seq / clientId 与引号）
+ *
+ * **宁高勿低**：估大了只是提前拦下一条本来也发不出去的帧；估小了就是 1009 断链。
+ * 所以每处都加了余量，而不是精确算。
+ */
+var WIRE_FRAME_BUDGET = 1024 * 1024 // 中继 DRC_MAX_MSG_BYTES 的默认值（协议层 MAX_RELAY_MESSAGE_BYTES）
+var WIRE_FRAME_HEADROOM = 8 * 1024 // 与协议层留的信封余量同值：宁可少发，不可断链
+
+/** base64 之后的长度（向上取整到 4 的倍数）。 */
+function base64Len(byteLen) {
+  return Math.ceil(byteLen / 3) * 4
+}
+
+/** 一条出站帧的线上字节估算（见 WIRE_FRAME_BUDGET 的注释）。 */
+function estimateWireFrameBytes(text, attachments) {
+  var textBytes = 0
+  try {
+    // encodeURIComponent + unescape 是小程序里量 UTF-8 字节的土办法（没有 Buffer）。
+    // 更稳的是 TextEncoder，但它的可用性在部分基础库上不一致；估高一点也安全。
+    textBytes = unescape(encodeURIComponent(String(text || ''))).length
+  } catch (e) {
+    textBytes = String(text || '').length * 3 // 兜底按最坏（中文 3 字节）估
+  }
+  var payload = 160 // 帧名 / cmdId / sessionId / 引号 / 转义余量
+  payload += textBytes
+  for (var i = 0; i < attachments.length; i++) {
+    var a = attachments[i]
+    payload += 64 // name + mediaType + 键名与引号
+    // ⚠️ 这里**不能**写 `payload += String(len)`：`+=` 见到字符串就变成拼接，
+    // 于是 `821447` + `"16800"` 变成字符串 `"82144716800"`，后面再 `Math.ceil(x/3)`
+    // 得到的估算值会大到离谱 → 一条普通消息也被这条闸拦下（第一版就踩了，
+    // 判据「纯文字正文必须照发」当场抓住）。数字就当数字加。
+    payload += (a.data || '').length // a.data 本来就是 base64，长度即长度
+  }
+  return base64Len(payload + 40) + 160
+}
 var MAX_TEXT_PER_BLOCK = 20000
 /**
  * **正文总量上限（字符）** —— 块数上限不封顶字节，这条才是 setData 的护栏。
@@ -155,6 +204,25 @@ function firstLine(text) {
     .trim()
   if (!s) return ''
   return s.length > TOOL_PREVIEW_CHARS ? s.slice(0, TOOL_PREVIEW_CHARS) + '…' : s
+}
+
+/**
+ * 文件的类型标签。
+ *
+ * `wx.chooseMessageFile` 给的 `type` 是**类别**（`'video' | 'image' | 'file'`），
+ * 不是扩展名——官方类型定义 `ChooseFile` 上写得很清楚。所以扩展名只能从**文件名**上取：
+ *  `report.pdf` → `pdf`，`notes.txt` → `txt`。
+ *
+ * `fallback` 只在文件名里确实没有扩展名时才用（`README` → `file` 而不是 `undefined`，
+ * 因为协议那边 `mediaType` 是可选的，而界面上一个空的类型标签比一个含糊的更难看）。
+ * 这里刻意**不猜**：`type:'image'` 配一个 `.pdf` 的名字时，宁可标成 `pdf`（名字说了算，
+ * 主机那边也是按名字保扩展名的），也不要标成 `image`。
+ */
+function extensionOf(name, fallback) {
+  var base = String(name || '')
+  var dot = base.lastIndexOf('.')
+  if (dot > 0 && dot < base.length - 1) return base.slice(dot + 1).toLowerCase()
+  return fallback || 'file'
 }
 
 /**
@@ -2030,6 +2098,21 @@ Page({
       wx.showToast({ title: '正在跑，先中断再发', icon: 'none' })
       return
     }
+    // 发送前的**最后一道**帧预算闸（2026-10-06）：附件那两道只算附件，正文长度没人管。
+    // 512KB 附件 + 约 88KB 以上正文会顶过中继的 1MB 硬帧上限，帧被 1009 掐掉、
+    // 整条连接断掉，用户看到的是"发出去就掉线"。这里提前拦，并说清该减什么。
+    // **必须拦在清空输入框之前**：拦完再清，用户就要重打一遍。
+    var wire = estimateWireFrameBytes(text, images)
+    if (wire > WIRE_FRAME_BUDGET - WIRE_FRAME_HEADROOM) {
+      wx.showToast({
+        title:
+          '这条太大发不出去（' +
+          Math.round(wire / 1024) +
+          'KB，超中继上限）：先把正文或附件减一些',
+        icon: 'none',
+      })
+      return
+    }
     this.setData({ inputText: '', attachments: [], attachCount: 0 })
     this._sendNow(text, images, files, pics)
   },
@@ -2216,10 +2299,39 @@ Page({
     })
   },
 
-  /** 逐份文件：读成 base64 -> 过预算闸 -> 进 attachments。
+  /**
+   * 逐份文件：读成 base64 -> 过预算闸 -> 进 attachments。
    *
-   * 读的是 tempFilePath（chooseMessageFile 给的就是这个字段；1.1.6 踩过的坑：
-   * 老代码读 f.path，那个字段从来不存在，于是每张图都读不出来）。
+   * ## 路径字段：`path`，不是 `tempFilePath`（2026-10-06 用户报"txt 附件读不出来"）
+   *
+   * 真 API 的形状在官方类型定义 `miniprogram-api-typings` 的 `ChooseFile` 里写死了：
+   *
+   * ```ts
+   * interface ChooseFile {
+   *   name: string                                  // 文件名（带扩展名）
+   *   path: string                                  // ← 本地临时路径
+   *   size: number
+   *   time: number
+   *   type: 'video' | 'image' | 'file'              // ← 类别，不是扩展名
+   * }
+   * ```
+   *
+   * 旧代码读 `f.tempFilePath` —— 那是 `chooseMedia` / `chooseImage` 的字段，
+   * `chooseMessageFile` **从来没有**它。于是 `filePath` 恒为 undefined，
+   * 每一个文件都直接落进 "这个文件读不出来 换一个试试"：文件附件这条路**一次都没通过**。
+   *
+   * `tempFilePath` 一起兜着是有意的，不是留后路：1.1.6 那次修的正是它（`chooseMedia` 侧），
+   * 而不同基础库/开发者工具对这两个入口的字段命名历史上并不统一。两个都读，
+   * 哪个给就用哪个——总比赌某一个更稳。
+   *
+   * ## 为什么非要读（用户问过："不能直接传路径吗？"）
+   *
+   * 不能。`path` 是 `wxfile://` 沙箱里的**本机临时路径**，只在手机那个沙箱内有意义：
+   * 主机插件跑在 Mac 上，中继是零知识中继（从头到尾只有密文、没有密钥）。
+   * Mac 上那个 Agent 要看到文件内容，唯一的通路就是**字节本身**走一遍载荷层
+   * （`cmd.send_prompt.files[].data`，base64），到主机再落盘换成路径交给 Agent
+   * （`shell/uploads.ts`）。要让"直接传"成立，就得把文件放到一个第三方服务器上、
+   * 再让 Mac 去拉——那等于把零知识这条整个拆掉，所以这条路是不改的。
    */
   _acceptPickedFiles: function (files) {
     var self = this
@@ -2232,16 +2344,20 @@ Page({
         return
       }
       var f = files[i++]
-      var filePath = f.tempFilePath
+      var filePath = f.tempFilePath || f.path
       if (!filePath) {
         wx.showToast({ title: '这个文件读不出来 换一个试试', icon: 'none' })
         next()
         return
       }
+      var name = f.name || f.fileName || ''
       var meta = {
         kind: 'file',
-        name: f.name || f.fileName,
-        type: f.type,
+        name: name,
+        // type 是**类别**（'video'/'image'/'file'），拿它当扩展名会把 report.pdf 标成
+        // mediaType:'file'——界面上那一行的类型标签就没信息了。扩展名从**文件名**上取，
+        // 那才是 Agent 认文件真正依据的东西（uploads.ts 不改扩展名）。
+        type: extensionOf(name, f.type),
         size: f.size,
       }
       self._readAsBase64(filePath, meta, out, next, self)
