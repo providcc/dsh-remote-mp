@@ -63,7 +63,8 @@ dsh-remote-mp/
    （必须是已备案域名 + 有效证书，且只能用 `wss://`）。
 3. **详情 → 本地设置** → 勾选「不校验合法域名、web-view、TLS 版本以及 HTTPS 证书」
    （开发期连 `ws://127.0.0.1:8787` 必需）。
-4. 主机侧先在 DSH 里执行 `/drc pair`，手机上扫码即连。
+4. 主机侧点 DSH 状态栏那颗 `dsh-remote-control` pill → 按「生成配对码」，
+   手机上扫码即连（`/drc` 命令 2026-10-03 已整条删除，pill 是唯一的配对入口）。
 
 `miniprogram_npm/tdesign-miniprogram` 是按依赖闭包裁剪过的预构建产物，**不要**在工具里点"构建 npm"。
 升级 TDesign 的做法见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)。
