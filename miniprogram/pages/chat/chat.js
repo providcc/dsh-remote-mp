@@ -4,6 +4,7 @@ var client = require('../../core/client.js')
 var theme = require('../../core/theme.js')
 var markdown = require('../../core/markdown.js')
 var env = require('../../core/env.js')
+var activityLib = require('../../core/activity.js')
 
 /**
  * chat 页 —— 一条会话渲染成「文档流」，不是一串聊天气泡。
@@ -1154,13 +1155,19 @@ Page({
     var found = this._findTool(blocks, p.callId)
     var prev = found ? found.item : null
 
+    // 工具名保持原样存（`tool` 是调试与断言的锚点），显示用中文类别：
+    // 宿主那行显示的中文（"正在读取文件"）就是按 core/activity.js 的映射算的，
+    // 这里跟它保持一致；原英文名退到副标题位（无标题时），信息不丢。
+    var toolName = p.tool || (prev && prev.tool) || 'tool'
+    var titleText = p.title || (prev && prev.title) || ''
     var item = {
       key: prev ? prev.key : 't' + this._counter++,
       type: 'tool',
       callId: p.callId,
       phase: p.phase,
-      tool: p.tool || (prev && prev.tool) || 'tool',
-      title: p.title || (prev && prev.title) || '',
+      tool: toolName,
+      cat: activityLib.activityLabel(toolName),
+      title: titleText || toolName,
       // 参数与结果各存一份：收起时只给结果的首行预览，展开时两段都看得到。
       // 两个字段的来源事件不同（args 在参数帧、result 在收尾帧），所以都要「有则更新」。
       args: p.argsPreview || (prev && prev.args) || '',

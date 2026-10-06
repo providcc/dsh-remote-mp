@@ -228,7 +228,8 @@
                       </view>
                       <view class="step-main">
                         <view class="step-head">
-                          <text class="step-name">{{it.tool}}</text>
+                          <!-- 中文类别（宿主同款映射，见 core/activity.js）：`cat` 缺席的老数据回退英文名 -->
+                          <text class="step-name">{{it.cat || it.tool}}</text>
                           <text wx:if="{{it.title}}" class="step-title ellipsis">{{it.title}}</text>
                         </view>
                         <view wx:if="{{it.open}}" class="step-detail">
