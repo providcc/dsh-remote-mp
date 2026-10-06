@@ -446,6 +446,60 @@ function cellNode(cell, c, tag, isHead, colPct) {
  * **不抛异常**：AI 回复里的内容不可控，一个畸形表格不该让整条消息渲染失败。
  * 解析出错时退化成「原文当纯文本」，那正是这个功能上线前的样子 —— 可用 > 好看。
  */
+/**
+ * 一块正文的**嵌套封顶**（2026-10-06 审计）。
+ *
+ * 为什么需要：`render()` 下面那个 `try/catch` **救不了"极端嵌套"这一支**——
+ * 它自己的注释就写着"解析器抛了（畸形输入/极端嵌套）"，但实测里 `marked.lexer`
+ * 在深嵌套上不是抛，是**把堆吃光然后被引擎致命终止**：
+ *
+ * ```
+ * 2000 层嵌套列表（约 16–20KB 正文，仍在 MAX_TEXT_PER_BLOCK=20000 之内）
+ *   → FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
+ * ```
+ *
+ * 致命终止**不是异常**，try/catch 拦不住，`catch` 里那句"退化成纯文本"永远轮不到执行。
+ * 在小程序上那不是"这一条渲染得丑"，是**整个页面进程被打死**：用户看到的是页面没了，
+ * 要重新进一次会话，而正文本身一个字节都没坏。
+ *
+ * 所以要在**进 lexer 之前**判掉。判据是"最大结构嵌套层数"，用一个便宜的一遍扫描：
+ * 引用符号 `>` 一层，行首缩进两格算一层（marked 的常用口径）。正常内容深不了十几层，
+ * 真正的爆点在 1000 层以上——32 这个上限离两者都极远。
+ *
+ * 命中上限就**整体退化成纯文本**（与 catch 分支同一条退路）：内容一个不少地留在屏幕上，
+ * 样式少了，但页面活着。流式期会有一次可见的跳变（前半段还是排版好的，越过上限后整块
+ * 变纯文本）——那是两种结果里明显更好的那一种。
+ */
+var MAX_RENDER_NESTING = 32
+
+/**
+ * 最大结构嵌套层数。**只看结构标记，不看正文内容**——正文里有多少个 `-`、多少个 `>`
+ * 都不算数，只数行首那几个。
+ *
+ * 提前返回：一旦越过上限就没必要看完剩下的行（正常文本第一遍扫完即可，代价与行数成正比）。
+ */
+function nestingDepthOf(text) {
+  var deepest = 0
+  var lines = String(text).split('\n')
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i]
+    if (!line) continue
+    var depth = 0
+    var j = 0
+    // 行首只可能是一串 `>` 与空白（引用 + 列表缩进），这里一次走完。
+    for (; j < line.length; j++) {
+      var ch = line.charAt(j)
+      if (ch === '>') depth++
+      else if (ch === ' ' || ch === '\t') depth += ch === '\t' ? 2 : 0.5
+      else break
+    }
+    depth = Math.floor(depth)
+    if (depth > deepest) deepest = depth
+    if (deepest > MAX_RENDER_NESTING) return deepest
+  }
+  return deepest
+}
+
 function render(src, isDark) {
   // 非字符串（null / undefined / 数字）一律**转成字符串再渲染**，不是当空输入：
   // 数据源变了形态时静默返回空数组 = 那条消息在界面上凭空消失，
@@ -453,6 +507,10 @@ function render(src, isDark) {
   var text = typeof src === 'string' ? src : src == null ? '' : String(src)
   if (!text) return []
   var c = palette(!!isDark)
+  // 极端嵌套要在 lexer **之前**拦：它不是异常，catch 拦不住（见 MAX_RENDER_NESTING 的注释）。
+  if (nestingDepthOf(text) > MAX_RENDER_NESTING) {
+    return [el('p', 'font-size:29rpx;line-height:1.65;white-space:pre-wrap;color:' + c.text + ';', [textNode(text)])]
+  }
   var nodes
   try {
     nodes = blockNodes(marked.lexer(text, { gfm: true, breaks: false }), c)
