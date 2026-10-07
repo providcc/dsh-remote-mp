@@ -740,11 +740,22 @@ class DrcClient {
    * 或超时只结算一次，断线时由 `_settleWaiters` 就地结算 —— 三个出口都要有结果，
    * 否则页面会永远停在"正在新建…"。
    *
+   * ## `workspace`：让新会话落进指定的分组（2026-10-07 接线，HANDOFF §0.10.4 第 4 步）
+   *
+   * 协议层有可选的 `cmd.new_session.workspace`（目录绝对路径，与
+   * `SessionSummary.workspace` 同一个字符串、逐字透传），主机侧也已就绪 ——
+   * 但这一侧**一直没发**：用户点「＋新建会话」，会话落进主机自己推断的目录，
+   * 在电脑的会话列表里归到别的分组甚至「未分组」，而回执照样 `ok:true`，
+   * **无错、无日志、手机上完全看不出**。
+   *
+   * **不传时行为与接线之前完全一致**（载荷里不带这个字段）—— 老主机那条路必须照走。
+   *
+   * @param {string} [workspace] 目标工作区的绝对路径；省略/空串 = 由主机推断
    * @returns Promise<{ok: boolean, sessionId?: string, message?: string}>。
    *          `ok:false` 一定带可读原因：主机那一代没有这个能力、创建失败、超时、断线，
    *          四种都要能说出来，"新建没反应"是最难查的那种表现。
    */
-  newSession() {
+  newSession(workspace) {
     var self = this
     // `isPaired()` 只说明本机存着 PSK 与 convId。**主机侧那条会话可能早没了**
     // （主机重启 / 会话被回收），而这时 sendCmd 照样"发得出去"——中继只是回一个
@@ -787,7 +798,11 @@ class DrcClient {
         done(null)
       }, COMMAND_TIMEOUT_MS)
       self._cmdWaiters[cmdId] = done
-      if (!self.sendCmd({ t: 'cmd.new_session', cmdId: cmdId })) done(null)
+      // 只在**给了非空** workspace 时才带上这个键 —— 老主机与老协议下不带它的那条路
+      // 必须逐字不变（载荷里多个未知键，schema 那边虽然会 strip，但那是运气不是设计）。
+      var cmd = { t: 'cmd.new_session', cmdId: cmdId }
+      if (workspace) cmd.workspace = String(workspace)
+      if (!self.sendCmd(cmd)) done(null)
     })
   }
 }

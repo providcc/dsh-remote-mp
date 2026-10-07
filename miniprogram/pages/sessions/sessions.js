@@ -421,7 +421,7 @@ Page({
         running: r.running,
         updatedAt: r.updatedAt,
       })
-      if (r.pending) pending.push({ id: r.id, title: r.title, badgeText: r.badgeText })
+      if (r.pending) pending.push({ id: r.id, title: r.title, badgeText: r.badgeText, workspace: r.workspace })
     }
     this.setData({
       sessions: items,
@@ -439,9 +439,38 @@ Page({
   onOpen: function (e) {
     var id = e.currentTarget.dataset.id
     var title = e.currentTarget.dataset.title || id
+    // 记下"最后点开的那条会话的工作区"——新建会话的默认值取自这里（见 onNewSession）。
+    // 为什么记在**点开**而不是"最近更新"：那是会话自己的属性，而用户点开列表
+    // 常常只是看一眼就走；真正表达"我接下来要在哪个项目里干活"的是点开哪一条。
+    // 只取会话摘要里那个 `workspace` 原样透传，不做任何换算（两侧不可能对不上）。
+    var ws = e.currentTarget.dataset.workspace
+    this._lastWorkspace = ws || this._lastWorkspace || ''
     wx.navigateTo({
       url: '/pages/chat/chat?id=' + encodeURIComponent(id) + '&title=' + encodeURIComponent(title),
     })
+  },
+
+  /**
+   * 新建会话该用哪个工作区（长按那条路显式给了的话不算）。
+   *
+   * 三级取值，与主机侧 `carrier-services.newSession` 的那三级同构：
+   * ① 最后点开的那条会话的工作区（`onOpen` 记的）；
+   * ② 列表里第一个非空分组 —— 列表已按工作区分组并把空目录排最后，所以第一个非空的就是
+   *    "屏幕上方那些会话所在的那个项目"；
+   * ③ 都没有 = 返回空串，调用点据此**不带** `workspace` 字段，行为与接线之前完全一致。
+   *
+   * ⚠️ ② 有个分不出��情况：用户只有一个项目时它必然等于 ①，那没问题；
+   * 而"用户有多个项目但从没点开过任何一条"时，② 只是屏幕顺序上的猜测 —— 这时候
+   * **猜错与不猜的代价相同**（都落到主机推断的目录），所以不值得为它多问一句。
+   * 想确定的用户有长按那条路。
+   */
+  _currentWorkspace: function () {
+    if (this._lastWorkspace) return this._lastWorkspace
+    var all = this.data.sessions || []
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].workspace) return all[i].workspace
+    }
+    return ''
   },
 
   /**
@@ -675,7 +704,7 @@ Page({
    * 3. **成功就直接进去**：新建就是为了马上发第一条指令，停在列表上再点一次是多余的。
    *    跳过去之后 chat 页会照常去读历史 —— 空会话读到空内容，是正常的。
    */
-  onNewSession: function () {
+  onNewSession: function (picked) {
     var self = this
     if (this.data.creating) return
     if (!this.client.isPaired()) {
@@ -686,6 +715,14 @@ Page({
       wx.showToast({ title: '还没连上主机，稍后再试', icon: 'none' })
       return
     }
+    // 没显式指定就用「当前分组」（长按那条路会把选中的工作区传进来）。
+    //
+    // 默认值的来历：最后点开的那条会话的工作区，没有就退到列表里第一个非空分组，
+    // 都没有就**不带这个字段**（由主机推断，行为与接线之前完全一致）。
+    // 为什么要有默认：用户点「＋新建会话」时心里通常有一个项目，而 DSH 的会话列表
+    // 按目录分组 —— 落错分组的话，用户在电脑上翻不到这条新会话，而**手机这边
+    // 全程没有任何提示**（回执照样 ok:true）。
+    var workspace = picked || this._currentWorkspace()
     this.setData({ creating: true })
     var done = function (res) {
       self.setData({ creating: false })
@@ -701,10 +738,63 @@ Page({
       })
     }
     this.client
-      .newSession()
+      .newSession(workspace)
       .then(done)
       .catch(function (e) {
         done({ ok: false, message: (e && e.message) || '新建会话失败' })
       })
+  },
+
+  /**
+   * 长按「＋新建会话」→ 从**已见过的分组**里选一个（HANDOFF §0.10.4 第 4 步）。
+   *
+   * 为什么不只靠默认：默认值取"最近点开的那条会话的工作区"，而人点开列表
+   * 常常只是看一眼就走 —— 于是默认会落到一个与意图无关的目录里，而**界面完全没有
+   * 反馈**（回执照样 `ok:true`，会话建在别处，用户在电脑上找不到）。
+   * 给一个明确的入口，是让"我要建在某个项目里"这件事可表达。
+   *
+   * 为什么是**长按**而不是单击：单击已经用于"用默认分组新建"，而这是这一代
+   * 唯一一个能改默认的动作（用户原话："弹窗让自己选"）。长按不额外占版面，
+   * 也不会让单击多一次点击。
+   *
+   * 列表只给**这一页见过的非空工作区**（会话摘要里的 `workspace`，原样透传，
+   * 不做任何换算，所以两侧不可能对不上）。没有可选项时不弹任何东西 ——
+   * 弹一个空列表比不弹更像坏了。
+   */
+  onNewSessionLongPress: function () {
+    var seen = {}
+    var order = []
+    var all = this.data.sessions || []
+    for (var i = 0; i < all.length; i++) {
+      var w = all[i].workspace
+      if (w && !seen[w]) {
+        seen[w] = true
+        order.push(w)
+      }
+    }
+    if (!order.length) {
+      // 一个都没见过 = 没有可选项。与其弹空列表，不如明说"为什么没有"。
+      wx.showToast({ title: '还没有会话用过工作区', icon: 'none' })
+      return
+    }
+    var labels = order.map(function (w) {
+      var parts = w.split('/')
+      var last = ''
+      for (var k = parts.length - 1; k >= 0; k--) {
+        if (parts[k]) {
+          last = parts[k]
+          break
+        }
+      }
+      return last || w
+    })
+    var self = this
+    wx.showActionSheet({
+      itemList: labels,
+      success: function (r) {
+        var picked = order[r.tapIndex]
+        if (picked) self.onNewSession(picked)
+      },
+    })
   },
 })

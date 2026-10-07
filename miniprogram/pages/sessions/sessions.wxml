@@ -137,6 +137,7 @@
             hover-stay-time="80"
             data-id="{{item.id}}"
             data-title="{{item.title}}"
+            data-workspace="{{item.workspace}}"
             bindtap="onOpen">
             <view class="sess-bar primary"></view>
             <view class="sess-main">
@@ -158,7 +159,8 @@
         class="section-action {{status === 'online' ? '' : 'off'}} {{creating ? 'busy' : ''}}"
         hover-class="{{status === 'online' && !creating ? 'pressed' : ''}}"
         hover-stay-time="80"
-        bindtap="onNewSession">
+        bindtap="onNewSession"
+        bindlongpress="onNewSessionLongPress">
         <view wx:if="{{creating}}" class="new-spin"></view>
         <text>{{creating ? '正在新建…' : '＋ 新建会话'}}</text>
       </view>
@@ -188,6 +190,7 @@
           hover-stay-time="80"
           data-id="{{item.id}}"
           data-title="{{item.title}}"
+          data-workspace="{{item.workspace}}"
           bindtap="onOpen">
           <!-- 左侧色条：运行中/待办扫一眼就能看出来，不用逐行读文字 -->
           <view class="sess-bar {{item.badgeTheme}}"></view>
