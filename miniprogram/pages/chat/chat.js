@@ -277,8 +277,25 @@ function firstLine(text) {
 function extensionOf(name, fallback) {
   var base = String(name || '')
   var dot = base.lastIndexOf('.')
-  if (dot > 0 && dot < base.length - 1) return base.slice(dot + 1).toLowerCase()
-  return fallback || 'file'
+  if (dot > 0 && dot < base.length - 1) return capLabel(base.slice(dot + 1).toLowerCase())
+  return capLabel(fallback || 'file')
+}
+
+/**
+ * 类型标签的长度上界（2026-10-07 补，§5-9）。
+ *
+ * `extensionOf` 的返回值就是协议里的 `fileAttachment.mediaType`，而 schema 是
+ * `z.string().max(64)` —— 一个 65 字符的扩展名（`a.<65 个字符>`）在主机那边会
+ * `parseCmdPayload` **整条拒掉**：主机只记一行日志，手机那边则干等满 12 秒的
+ * `COMMAND_TIMEOUT_MS` 才得到一句「主机没有回应」（同一个修的另一半在
+ * `dsh-remote-control` 的 `runtime.handleInvalidCommand`，现在会回一条明说原因的执）。
+ *
+ * 夹在这里是"两端都能过"的最后一道：名字是手机本地的、我们自己就能收口，
+ * 不必等主机那一版跟上来。64 是协议的上界，不是这里拍的数。
+ */
+function capLabel(label) {
+  var s = String(label || '')
+  return s.length > 64 ? s.slice(0, 64) : s
 }
 
 /**
@@ -2827,7 +2844,18 @@ Page({
 
   onInterrupt: function () {
     if (!this.data.sessionId) return
-    this.client.interrupt(this.data.sessionId)
+    /**
+     * **不许无条件报成功**（2026-10-07 补，§5-5）。
+     *
+     * `sendCmd` 是会返回 false 的：退避窗口内、或 socket 对象还在而底层 task 已经
+     * 不在（重连退避窗口）时，那条帧根本没上过网。这一句原来**不看结果**一律 toast
+     * 「已发送中断」—— 用户以为中断发出去了，主机那边的回合照旧跑到底，
+     * 而这正是"点了没反应"里最让人困惑的一档（它还额外报了一次成功）。
+     *
+     * 失败时不再叠第二条 toast：`sendCmd` 自己已经 emit 了一条带原因的 error，
+     * 页面上那个 `evt.kind === 'error'` 的分支会把它弹出来。
+     */
+    if (this.client.interrupt(this.data.sessionId) === false) return
     wx.showToast({ title: '已发送中断', icon: 'none' })
   },
 
@@ -2835,13 +2863,22 @@ Page({
     var decision = e.currentTarget.dataset.decision
     var perm = this.data.pendingPermission
     if (!perm) return
+    /**
+     * **先把帧发出去、再清卡**（2026-10-07 补，§5-6）。
+     *
+     * 顺序原来是反的：卡当场 `setData(null)`，然后再发。可 `sendCmd` 是会失败的
+     * （退避窗口、底层 socket 不在、没配上……），失败时那张卡**已经没了**——
+     * 主机那边继续阻塞 180 秒，而用户手上没有任何能再点一次的东西，
+     * 界面上还留着"已经决定了"的假象。发不出去时卡原地不动，
+     * `sendCmd` 那条 error 说明原因，用户再点一次就行。
+     */
+    if (this.client.resolvePermission(this.data.sessionId, perm.requestId, decision) === false) return
     this.setData({ pendingPermission: null, running: decision !== 'reject' })
     this._renderBar()
     // **这表两张卡共用**：提问卡还挂着就继续走秒（它在 data 里没被动过）。
     // 无条件停表会把提问卡的倒数冻在那一刻 —— 用户以为还有 2 分钟，
     // 而主机那边 300 秒一到就按"没答上"结掉了。
     if (!this.data.pendingQuestion) this._stopCardTick()
-    this.client.resolvePermission(this.data.sessionId, perm.requestId, decision)
   },
 
   onOptionTap: function (e) {
@@ -2882,8 +2919,11 @@ Page({
       wx.showToast({ title: '请先选择一项', icon: 'none' })
       return
     }
+    // **先发、再清卡**（与 onPermissionTap 同一条，2026-10-07，§5-6）：
+    // 发不出去时卡留着，用户可以再点一次；清掉就再也补不回来了，
+    // 而主机那条 300 秒的提问还挂着等答案。
+    if (this.client.answer(this.data.sessionId, q.requestId, answers) === false) return
     this.setData({ pendingQuestion: null, running: true })
     this._renderBar()
-    this.client.answer(this.data.sessionId, q.requestId, answers)
   },
 })

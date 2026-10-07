@@ -60,6 +60,18 @@ class DrcClient {
      * 一张表按 cmdId 分派，是因为"结算点只有一个"这条纪律不好维护第二份。
      */
     this._cmdWaiters = {}
+    /**
+     * 对端说"太快了"的退避截止时刻（ms）。
+     *
+     * 中继的 `error` 帧现在会带 `retryAfterMs`（规范 §12.2 E2，2026-10-07 接线）——
+     * 这一端从前只把它 toast 掉，等于收到了一个精确的数字却**照旧立刻重试**。
+     * 在这个窗口内发命令只会再被拒一次，而配对限流那条路是会自我加速的
+     * （被拒 → 再发 → 再被拒）。所以窗口内**在 `nextNonceFor` 之前**就地拒绝：
+     * 既不消耗 nonce，也不必等一次必然失败的来回。
+     *
+     * 连接重建时清零（`_onHelloOk`）：配额按连接算，新 socket 是一份新配额。
+     */
+    this._rateLimitedUntil = 0
   }
 
   // ── 事件 ──────────────────────────────────────────────────────────
@@ -317,6 +329,20 @@ class DrcClient {
       this.emit({ kind: 'error', message: '配对记录不完整，不能安全地发送指令：请重新扫码配对' })
       return false
     }
+    /**
+     * 退避窗口内**先拒绝**（2026-10-07 补，§5-13）。
+     *
+     * 必须排在 `nextNonceFor` **之前**：退避中的命令本来就发不出去，
+     * 消耗一次 nonce 只是白白把计数器往前推——它安全（不会复用），但毫无意义。
+     */
+    var waitMs = this._rateLimitedUntil - Date.now()
+    if (waitMs > 0) {
+      this.emit({
+        kind: 'error',
+        message: '对端限流中，请 ' + Math.max(1, Math.ceil(waitMs / 1000)) + ' 秒后再发',
+      })
+      return false
+    }
     var nonce = store.nextNonceFor(this._resume)
     // null = 这一次的 nonce 没能安全落盘（存储写失败）。**不许发**：发了就有可能在重启后
     // 复用同一个 nonce，而那是密钥流复用。宁可这次指令失败，也不要一条看不见的密码学退化。
@@ -325,13 +351,30 @@ class DrcClient {
       return false
     }
     var rec = codec.seal(this.kC2H, cmd, nonce)
-    return this.sendControl({
+    var sent = this.sendControl({
       t: 'enc',
       sessionId: this.convId,
       seq: ++this.seq,
       clientId: this.clientId,
       ciphertext: rec.ciphertext,
     })
+    /**
+     * **发不出去必须说出来**（2026-10-07 补，§5-4）。
+     *
+     * 这条路是真实发生过、且只有真机才看得见的：socket **对象还在**，但底层的
+     * SocketTask 已经不在了（重连退避窗口，`socket.js` 的 `_task === null`），
+     * `send()` 返回 false 而**不抛错**。`sendCmd` 原来只在
+     * "没配对 / 没 socket / nonce 落不了盘"三档报错，这一档一条都不报 ——
+     * 于是调用方拿到一个没人看的 false，用户看到的是"点了没反应"，
+     * 而中转那句话（`interrupt`/`answer`/`resolve_permission` 全部不看返回值）
+     * 让它变成一次彻底静默的丢帧。
+     *
+     * nonce 已经消耗掉了，这一条是**丢帧不是复用**：计数器往前走永远是安全的方向。
+     */
+    if (!sent) {
+      this.emit({ kind: 'error', message: '还没连上主机，这条没有发出去（正在恢复连接）' })
+    }
+    return sent
   }
 
   newCmdId() {
@@ -340,6 +383,19 @@ class DrcClient {
   }
 
   // ── 接收：控制面 ──────────────────────────────────────────────────
+  /**
+   * 解一帧 → 派发。
+   *
+   * **派发整段有 `try/catch`**（2026-10-07 补，§5-11）。原来只 `JSON.parse` 被包住，
+   * switch 内部一个 `TypeError`（`enc-batch` 收到 `null` 元素、`_onPaired` 拿到
+   * 派生不出密钥的 psk……）就会**逃出 `_onFrame`**，落到 wx 的 socket 回调里 ——
+   * 后果不是"这一帧失败"，是**这条连接上后面所有帧都没人处理了**，而界面上什么都没有。
+   * `enc-batch` 那两条逐项守卫就是为这一类加的，但那只治好了那一个 case。
+   *
+   * 与 `JSON.parse` 失败**静默丢弃**（上面那个 catch）是两种不同的处理，这是刻意的：
+   * 坏 JSON 是"对端发了垃圾"，本轮见过的 case 是"对端发了一条我们的代码没接住的合法帧"——
+   * 后者要留痕，否则下一次还是查不到。
+   */
   _onFrame(raw) {
     var f
     try {
@@ -349,6 +405,14 @@ class DrcClient {
     }
     if (!f || !f.t) return
 
+    try {
+      this._dispatchFrame(f)
+    } catch (e) {
+      this.emit({ kind: 'error', message: '有一条数据没能处理，已跳过' })
+    }
+  }
+
+  _dispatchFrame(f) {
     switch (f.t) {
       case 'hello-ok':
         this._onHelloOk(f)
@@ -376,6 +440,24 @@ class DrcClient {
         this._setStatus('needs-pair', '主机已断开，请重新配对')
         return
       case 'error':
+        /**
+         * `retryAfterMs`（规范 §12.2 E2，2026-10-07 接线，§5-13）。
+         *
+         * 中继从前**不发**这个字段，于是这一端没有东西可读；它现在发了，而这一端原来
+         * 只是 toast 掉 —— 收到一个精确的毫秒数却照旧立刻重试，那与不发没有区别。
+         * 这里把它记进 `_rateLimitedUntil`（`sendCmd` 会在窗口内先拒绝，见那边注释）。
+         *
+         * 只认两个"等一等就好"的码（`errors.wantsRetryAfter` 的同一张表，但小程序
+         * **引不了协议包**，所以字面量只能各写一份——伞仓 `e2e/wire-surface.test.mjs`
+         * 比的是 `ev.*`/`cmd.*`，管不到 `error.code`，这一点如实记在这）。
+         */
+        if (
+          (f.code === 'rate_limited' || f.code === 'pair_table_full') &&
+          typeof f.retryAfterMs === 'number' &&
+          f.retryAfterMs > 0
+        ) {
+          this._rateLimitedUntil = Math.max(this._rateLimitedUntil, Date.now() + f.retryAfterMs)
+        }
         if (f.code === 'unknown_session') {
           this._forgetPairing()
           this._setStatus('needs-pair', '会话已失效，请重新配对')
@@ -427,6 +509,9 @@ class DrcClient {
   }
 
   _onHelloOk(f) {
+    // 新连接 = 新配额：限流退避不该跨连接生效（与主机侧同一条理由 ——
+    // 旧窗口早就过去了，留着它会让"重连之后什么都发不出去"看起来像另一个 bug）。
+    this._rateLimitedUntil = 0
     if (f.clientId) this.clientId = f.clientId
     if (this._pendingToken) {
       this._setStatus('pairing', '正在配对…')
@@ -479,7 +564,25 @@ class DrcClient {
     this.kC2H = codec.derivePskKey(this.psk, 'c2h', this.convId)
     this.kH2C = codec.derivePskKey(this.psk, 'h2c', this.convId)
     this._resume = pairing
-    store.savePairing(pairing)
+    /**
+     * **写失败要说出来**（2026-10-07 补，§5-7）。
+     *
+     * `savePairing()` 返回 false 时，这次配对**只活在内存里**：用户此刻一切正常，
+     * 而一旦退出小程序，`hydrate()` 读不到任何记录、`loadPairingError()` 也是空的
+     * （那条路径只覆盖"读到了、但形状坏了"）—— 界面上呈现成"这台机器从没配对过"，
+     * 用户会以为配对又失效了。真相是"存不进去"，而存不进去的原因（配额满）
+     * 用户自己就能看出并且可以清理。
+     *
+     * 与 `nextNonceFor` 那条**不同**，这里**不能**拒绝配对：nonce 落不了盘就拒发
+     * 是密码学纪律，而整份记录落不了盘时我们手上的 PSK 是**唯一**一份 ——
+     * 丢掉它等于立刻让用户重扫，不丢则重启后要重扫。两者都不如**现在就告诉他**。
+     */
+    if (!store.savePairing(pairing)) {
+      this.emit({
+        kind: 'error',
+        message: '配对信息没能存进本机（存储可能已满），退出小程序后需要重新扫码',
+      })
+    }
     this._setStatus('online', '已配对到 ' + (this.hostLabel || this.hostId || '主机'))
     // 主机在 peer-joined 时会推 sessions + keep-awake，但主动再要一次，
     // 保证主机正在忙的时候列表也能填上

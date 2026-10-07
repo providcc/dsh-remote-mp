@@ -83,6 +83,22 @@ function loadPairing() {
   if (!codec.isValidPairingServer(p.server)) return dropCorrupt('server')
   if (!codec.isValidPsk(p.psk)) return dropCorrupt('psk')
   if (typeof p.convId !== 'string' || !p.convId) return dropCorrupt('convId')
+  /**
+   * **nonce 计数器也必须过校验**（2026-10-07 补，§5-8）。
+   *
+   * 前面几项拦的是"密钥坏了"，这一项拦的是"密钥是对的、但计数器没存好"——
+   * 而后者更贵：`nextNonceFor` 是 `Number(pairing.nonceCounter || 0) + 1`，
+   * 一个缺字段/NaN 的记录会让计数器**从 1 重新开始**，同一 psk+convId 下
+   * 之前用过的 nonce 全部被复用一遍，正是本文件头那条不变式禁止的事，
+   * 而且**没有任何一条路径能发现它**（它不会报错，只是悄悄生成了重复的 nonce）。
+   *
+   * 计数器从初次提交起就一直被写入（`_onPaired` 恒带 `nonceCounter`），
+   * 所以这条校验把谁踢出配对只有一种可能：那份记录本身被写坏了。
+   * 宁可要求重扫，也不要一条看不见的密钥流复用。
+   */
+  if (typeof p.nonceCounter !== 'number' || !Number.isInteger(p.nonceCounter) || p.nonceCounter < 0) {
+    return dropCorrupt('nonceCounter')
+  }
   return p
 }
 

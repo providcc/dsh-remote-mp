@@ -258,6 +258,18 @@ Page({
     } else if (evt.kind === 'payload' && evt.payload.t === 'ev.permission_request') {
       // 审批与提问同一性质（主机阻塞等决定，180 秒超时自动拒绝），对称处理。
       wx.showToast({ title: '主机在另一条会话里等审批', icon: 'none' })
+    } else if (evt.kind === 'payload' && evt.payload.t === 'ev.result' && evt.payload.ok === false) {
+      /**
+       * 列表页发起的命令失败时，这一句是**唯一**的出口（2026-10-07 补，§5-10）。
+       *
+       * `cmd.list_sessions` 是 fire-and-forget（回执有 waiter 时不往下派，没有时才走这里，
+       * 见 `client.js` 的 `_onEncrypted`）。chat 页有一个 `ok:false` 分支会弹，本页**没有**，
+       * 于是"列表没刷出来"与"主机拒了这次刷新"长得一模一样——而后者往往意味着
+       * 主机那一代还认不出这条指令（见 `runtime.handleInvalidCommand`）。
+       *
+       * 只弹失败：`ok:true` 的回执是成功路径的正常噪音，弹它会把这里变成噪声源。
+       */
+      wx.showToast({ title: String(evt.payload.message || '主机没能完成这条指令').slice(0, 40), icon: 'none' })
     } else if (evt.kind === 'status') {
       this._renderStatus(evt.status, evt.text)
       // 配对成功：状态一变，wxml 的 `wx:if` 分支自己就切到会话列表了。
