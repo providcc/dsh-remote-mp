@@ -635,6 +635,25 @@ Page({
       // 所以这里显式清掉"已经取过"的三个标志，让它按老路径重新读一遍。
       // 用 _historyStarted 复位而不是加一个重连专用分支，是因为复读历史
       // 这条路本来就在（进会话、首次连上），复用它才不会漏掉它的那些守卫。
+      if (evt.status === 'online') {
+        /**
+         * 挂起的审批/提问：**每一次**连上都补拉一次，不挂在 `_wasOffline` 那个条件下。
+         *
+         * 为什么（用户 2026-10-07 实测）：`client.sendCmd()` 只检查 `isPaired()` 与
+         * `this.sock` 存不存在，**不检查 socket 是否真的开着**——所以离线时 `getPending`
+         * 不报错也不抛，只是那一条指令被 `sock.send()` 静默丢掉（返回 false，
+         * 而调用点是 fire-and-forget）。而 `_wasOffline` 只由**页面挂上之后**收到的
+         * 'connecting' / 'idle' 事件置真，于是"我打开会话时手机本来就是离线的"这件事
+         * 页面看不见：随后连上、status 变成 'online'，`_wasOffline` 仍是 false，
+         * 整段补拉被跳过 —— 那张卡**永远不出现**，用户只能"当时人在会话里"才看得到。
+         *
+         * 幂等：主机侧 `cmd.get_pending` 没有挂起时只回 `ev.result{ok:true}`，
+         * 不重发任何帧（`runtime.ts` 的那段），所以多拉一次没有任何副作用。
+         *
+         * 这一条同时锁住审批与提问——它们在主机是同一份 `pending`、同一个命令、同一段补拉。
+         */
+        this.client.getPending(this.data.sessionId)
+      }
       if (evt.status === 'online' && this._wasOffline) {
         this._wasOffline = false
         this._historyStarted = false
@@ -679,8 +698,8 @@ Page({
         // 断了多久不知道，但主机那边的会话状态一定变了 —— 顶栏那个
         // 「运行中」要重新问一次，否则它会一直停在上一次的值上。
         this.client.listSessions()
-        // 挂起的卡也要重新问一次：断链期间挂上的审批/提问，那一帧已经过去了。
-        this.client.getPending(this.data.sessionId)
+        // 挂起卡**不在这里拉**：上面那个"每次连上都补拉一次"已经覆盖了——
+        // 同一条指令拉两遍没有第二个收益，只是让人以为这里另有一道保障。
       }
       // 记下"曾经断过"，onHide/unload 之外的断开都走上面那条。
       if (evt.status === 'connecting' || evt.status === 'idle') this._wasOffline = true
