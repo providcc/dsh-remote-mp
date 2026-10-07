@@ -169,7 +169,7 @@
     <view wx:if="{{sessions.length === 0}}" class="card empty-card">
       <t-empty
         icon="chat"
-        description="{{hiddenArchived ? '这里只有归档会话，已隐藏' : (status === 'online' ? '主机上还没有会话。点上面的「＋ 新建会话」开一条' : '连上主机后，这里会列出它的会话')}}" />
+        description="{{archivedCount ? '这里没有进行中的会话（' + archivedCount + ' 条已归档，在下面）' : (status === 'online' ? '主机上还没有会话。点上面的「＋ 新建会话」开一条' : '连上主机后，这里会列出它的会话')}}" />
     </view>
 
     <!-- 一条会话一行，整张列表一张卡（2026-10-05 用户：还是原来的样式，不要卡片）。
@@ -191,7 +191,8 @@
           data-id="{{item.id}}"
           data-title="{{item.title}}"
           data-workspace="{{item.workspace}}"
-          bindtap="onOpen">
+          bindtap="onOpen"
+          bindlongpress="onSessionLongPress">
           <!-- 左侧色条：运行中/待办扫一眼就能看出来，不用逐行读文字 -->
           <view class="sess-bar {{item.badgeTheme}}"></view>
 
@@ -234,8 +235,56 @@
       </block>
     </view>
 
-    <!-- 归档会话被藏起来了，得留一句话，否则用户会以为会话丢了 -->
-    <view wx:if="{{hiddenText}}" class="hidden-note">{{hiddenText}}</view>
+    <!-- 归档会话（2026-10-07）：原来被**直接丢掉**，只在底部留一句
+         「已隐藏 N 个归档会话」——于是归档在小程序上不可逆：主机那边有
+         cmd.archive_session，列表也真的收到了那些行，用户却再也找不回来。
+         现在单独成一组、默认折叠（大多数归档是"做完了先收起来"），
+         展开后每行长按可取消归档。
+         ⚠️ 空列表时整区不占地方：那句话说给"有过归档"的人听。 -->
+    <view wx:if="{{archivedCount}}" class="section-title">
+      <text>归档</text>
+      <view
+        class="section-action"
+        hover-class="pressed"
+        hover-stay-time="80"
+        bindtap="onToggleArchived">
+        <view class="caret {{archivedOpen ? 'up' : ''}}"></view>
+        <text>{{archivedOpen ? '收起' : '展开'}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{archivedOpen && archivedCount}}" class="card">
+      <block wx:for="{{archivedSessions}}" wx:for-index="idx" wx:key="id">
+        <view wx:if="{{idx > 0}}" class="sess-line"></view>
+        <view
+          class="sess"
+          hover-class="pressed"
+          hover-stay-time="80"
+          data-id="{{item.id}}"
+          data-title="{{item.title}}"
+          bindtap="onArchivedTap"
+          bindlongpress="onArchivedLongPress">
+          <view class="sess-bar"></view>
+          <view class="sess-main">
+            <view class="sess-head">
+              <view class="sess-title ellipsis">{{item.title}}</view>
+              <!-- 进度**就地**显示在徽标位上：不在行里加第二个指示器，
+                   那一行已经有色条/标题/徽标/项目名/时间五样了。 -->
+              <view class="sess-badge {{archivingId === item.id ? 'primary' : 'default'}}">
+                <text>{{archivingId === item.id ? '处理中' : '已归档'}}</text>
+              </view>
+            </view>
+            <view class="sess-meta">
+              <view wx:if="{{item.workspaceTag}}" class="sess-project">
+                <view class="sess-project-dot"></view>
+                <text class="sess-project-name ellipsis">{{item.workspaceTag}}</text>
+              </view>
+              <view class="sess-time">{{item.updatedAt}}</view>
+            </view>
+          </view>
+        </view>
+      </block>
+    </view>
 
     <!-- 底部只剩主题切换：配对相关的动作都收到主机卡上去了
          （解除配对在卡里，旁边那颗多余入口 2026-10-04 删除——先解除再扫码即可）。 -->

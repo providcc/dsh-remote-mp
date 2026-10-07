@@ -159,9 +159,18 @@ Page({
     hostLabel: '',
     /** 正在连/正在配对：主机卡上要有可见的动静，别让用户以为卡死了 */
     connecting: false,
-    /** 被过滤掉的归档会话数；>0 时列表底部补一句说明 */
-    hiddenArchived: 0,
-    hiddenText: '',
+    /**
+     * 归档会话（2026-10-07）。原来它们被**直接丢掉**，只在底部留一句
+     * 「已隐藏 N 个归档会话」——于是"归档"这件事在小程序上不可逆：
+     * 主机那边明明有 `cmd.archive_session`，列表也真的收到了那些行。
+     * 现在单独成一组、默认折叠，展开后每行都能取消归档。
+     */
+    archivedSessions: [],
+    archivedCount: 0,
+    /** 归档区的折叠状态。页面自己的界面状态，不随列表刷新重置。 */
+    archivedOpen: false,
+    /** 正在归档/取消归档的会话 id。空串 = 没有正在进行的那一次。 */
+    archivingId: '',
     /** 正在让主机新建会话。没有这个状态，连点会真的造出好几条空会话 */
     creating: false,
     /**
@@ -394,16 +403,26 @@ Page({
    * 那条会话的上下文（onOpen 同一套）。下面完整列表照旧，两边是同一批数据，
    * 不是两份真相。
    */
+  /**
+   * 渲染会话列表。
+   *
+   * **归档会话单独成一组**（2026-10-07）：原来这里把它们**直接丢掉**，只在底部留
+   * 一句「已隐藏 N 个归档会话」——而主机那边明明有一条 `cmd.archive_session` 可用、
+   * 列表也**真的收到了**那些行。丢掉它们的后果是"归档了却再也找不回来、也没法取消"：
+   * 用户只能回工作台。
+   *
+   * 为什么是"折叠的一组"而不是"平铺在列表里"：归档会话大多数是**故意收起来的**
+   * （做完了、暂时不想看见），平铺会让日常列表变长。折叠保留可逆性——
+   * 一次点击就展开，展开后每行都能取消归档。
+   *
+   * 两个区共用同一批数据（`rows` 一次遍历分开），不是两份真相：
+   * 排序口径、徽标、标题、时间全部走同一个 `toRow`。
+   */
   _renderSessions: function (list) {
     var rows = []
-    var hidden = 0
     var all = list || []
     for (var i = 0; i < all.length; i++) {
       var s = all[i]
-      if (s.state === 'archived') {
-        hidden++
-        continue
-      }
       var b = badgeFor(s.state, s.running)
       rows.push({
         id: s.id,
@@ -413,6 +432,7 @@ Page({
         badgeTheme: b.theme,
         running: b.theme === 'primary',
         pending: s.state === 'awaiting-permission' || s.state === 'awaiting-answer',
+        archived: s.state === 'archived',
         // sortAt 只参与排序，不进 setData（渲染层用不到，别让它两处口径）
         sortAt: new Date(s.updatedAt).getTime() || 0,
         updatedAt: formatTime(s.updatedAt),
@@ -420,10 +440,11 @@ Page({
     }
     rows.sort(sessionRank)
     var items = []
+    var archived = []
     var pending = []
     for (var j = 0; j < rows.length; j++) {
       var r = rows[j]
-      items.push({
+      var row = {
         id: r.id,
         title: r.title,
         workspace: r.workspace,
@@ -432,15 +453,24 @@ Page({
         badgeTheme: r.badgeTheme,
         running: r.running,
         updatedAt: r.updatedAt,
-      })
+      }
+      if (r.archived) archived.push(row)
+      else items.push(row)
       if (r.pending) pending.push({ id: r.id, title: r.title, badgeText: r.badgeText, workspace: r.workspace })
     }
+    // 折叠状态是**页面自己的**界面状态，不是会话的属性：它不参与渲染层的数据口径，
+    // 也不该随列表刷新被重置（刷新时用户刚展开的折叠区又合上，是最烦人的那类）。
     this.setData({
       sessions: items,
+      archivedSessions: archived,
+      archivedCount: archived.length,
       pending: pending,
       pendingCount: pending.length,
-      hiddenArchived: hidden,
-      hiddenText: hidden ? '已隐藏 ' + hidden + ' 个归档会话' : '',
+      // 保留这两个字段：wxml 里还有别处在读它们吗？——没有。但删掉它们会让
+      // 「已隐藏 N 个」这句话**整个消失**，而那个 strip 掉的分支正是本次要修的东西，
+      // 留着两个新字段比留一个孤零零的计数好判断。
+      hiddenArchived: 0,
+      hiddenText: '',
     })
   },
 
@@ -716,6 +746,106 @@ Page({
    * 3. **成功就直接进去**：新建就是为了马上发第一条指令，停在列表上再点一次是多余的。
    *    跳过去之后 chat 页会照常去读历史 —— 空会话读到空内容，是正常的。
    */
+  /**
+   * 展开 / 收起归档区。
+   *
+   * 单独一个方法而不是在 wxml 里写 `!archivedOpen` 取反：那种写法在
+   * `setData` 的异步视图更新里会连点两次落到同一个值上（两次都读到 false）。
+   */
+  onToggleArchived: function () {
+    this.setData({ archivedOpen: !this.data.archivedOpen })
+  },
+
+  /**
+   * 归档一条会话（长按列表里那一行）。
+   *
+   * **长按而不是加一颗按钮**：一行里已经有色条、标题、徽标、项目名、时间，
+   * 再加一颗"归档"就把"读这一行"变成了"在五样东西里找那颗按钮"。
+   * 长按是零版面成本的动作，而这一行的主作用（点开）仍然是单击。
+   *
+   * 确认走 `wx.showActionSheet` 而不是 `showModal`：归档**可逆**（能取消回来），
+   * 不需要"确定/取消"那种郑重的二选一；ActionSheet 一行就是那个动作本身。
+   */
+  onSessionLongPress: function (e) {
+    var self = this
+    var id = e.currentTarget.dataset.id
+    var title = e.currentTarget.dataset.title || id
+    if (!id || this.data.archivingId) return
+    if (this.data.status !== 'online') {
+      wx.showToast({ title: '还没连上主机，稍后再试', icon: 'none' })
+      return
+    }
+    wx.showActionSheet({
+      itemList: ['归档「' + String(title).slice(0, 12) + '」'],
+      success: function () {
+        self._doArchive(id, true)
+      },
+    })
+  },
+
+  /** 取消归档（归档区里那一行的长按）。与归档同一个出口，方向相反。 */
+  onArchivedLongPress: function (e) {
+    var self = this
+    var id = e.currentTarget.dataset.id
+    var title = e.currentTarget.dataset.title || id
+    if (!id || this.data.archivingId) return
+    if (this.data.status !== 'online') {
+      wx.showToast({ title: '还没连上主机，稍后再试', icon: 'none' })
+      return
+    }
+    wx.showActionSheet({
+      itemList: ['取消归档「' + String(title).slice(0, 12) + '」'],
+      success: function () {
+        self._doArchive(id, false)
+      },
+    })
+  },
+
+  /**
+   * 点归档区里的一行 → **取消归档**（而不是打开它）。
+   *
+   * 为什么点开不是"进会话"：主机对归档会话的每一步都直接拒绝
+   * （`ensureRunnable` 会先恢复它，但手机这边发指令的路径是 chat 页，
+   * 那里没有任何"这条已归档"的提示）——用户会进去、输一段话、发出去、
+   * 然后拿到一句"主机没有回应"。所以归档行**不给"打开"这条路**。
+   *
+   * 取消归档是可逆动作里最容易判断的一个（用户点它就是想拿回来），所以
+   * 单击直接做，长按那条 ActionSheet 入口保留给"我想确认一下"的人。
+   */
+  onArchivedTap: function (e) {
+    var id = e.currentTarget.dataset.id
+    if (!id || this.data.archivingId) return
+    this._doArchive(id, false)
+  },
+
+  /**
+   * 真去归档 / 取消归档。
+   *
+   * `archivingId` 是**进行中那一条的 id** 而不是布尔：连点两行时，
+   * 第二次能被"已经有一次在跑"挡掉，而用户仍看得见是哪一行在忙。
+   * 判据不能用 `busy`（那是配对用的）或 `creating`（那是新建会话用的）——
+   * 共用它们会让归档的进度显示到别的按钮上。
+   */
+  _doArchive: function (id, archived) {
+    var self = this
+    this.setData({ archivingId: id })
+    var done = function (res) {
+      self.setData({ archivingId: '' })
+      if (!res || !res.ok) {
+        // 主机给的原因**原样**给用户：这一条的命令空间大
+        //（「这一代主机不支持」与「会话正在运行，不能归档」）必须分别说出来。
+        wx.showToast({ title: String((res && res.message) || '归档失败').slice(0, 40), icon: 'none' })
+        return
+      }
+      // 成功**主动刷新**一次，不等主机补推的那一帧：用户点完就该看到列表变了。
+      // 主机侧那条补推是兜底（应对别处改的会话），这里这条是"我点的，我确认"。
+      self.refresh()
+    }
+    this.client.archiveSession(id, archived).then(done, function (e) {
+      done({ ok: false, message: (e && e.message) || '归档失败' })
+    })
+  },
+
   onNewSession: function (picked) {
     var self = this
     if (this.data.creating) return

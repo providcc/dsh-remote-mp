@@ -908,6 +908,71 @@ class DrcClient {
       if (!self.sendCmd(cmd)) done(null)
     })
   }
+
+  /**
+   * 归档 / 取消归档一条会话（2026-10-07 加）。
+   *
+   * 与 `newSession` 同一套回执机制与同一套前置判断：按 `cmdId` 登记 waiter，
+   * `ev.result` 或超时只结算一次；`status !== 'online'` 就地拒绝并说清原因。
+   *
+   * ## 为什么 `ok:false` 一定有可读原因
+   *
+   * 这一条的命令空间特别大，而它们在手机上**必须表现不同**：
+   * 「主机这一代不支持」（白点一个按钮，但不该像坏了）与
+   * 「会话正在运行，不能归档」（这个能修，去电脑上让它跑完）是两件事。
+   * 所以这里原样透传 `payload.message`，不做任何"统一话术"。
+   *
+   * ## 不传 `stopActivity`
+   *
+   * 协议里没有这个字段（`payloads.ts` 的注）：它会**停掉主机上正在跑的工作**，
+   * 而这是用户在手机上的一次误点换来的不可逆损失。主机侧明确拒绝，用户回工作台停。
+   *
+   * @param {string} sessionId DSH 会话 id（不是配对通道 id，F3）
+   * @param {boolean} archived 省略/`true` = 归档；`false` = 取消归档
+   * @returns Promise<{ok: boolean, message?: string}>
+   */
+  archiveSession(sessionId, archived) {
+    var self = this
+    if (!sessionId) return Promise.resolve({ ok: false, message: '缺少会话 id' })
+    if (this.status !== 'online') {
+      return Promise.resolve({
+        ok: false,
+        message:
+          this.status === 'connecting'
+            ? '还没连上主机，正在恢复连接，请稍后重试'
+            : '还没有连上主机，请先完成配对',
+      })
+    }
+    if (!this.isPaired() || !this.sock) {
+      return Promise.resolve({ ok: false, message: '还没有连上主机' })
+    }
+    var cmdId = this.newCmdId()
+    return new Promise(function (resolve) {
+      var timer = null
+      var done = function (payload) {
+        if (!self._cmdWaiters[cmdId]) return
+        delete self._cmdWaiters[cmdId]
+        if (timer) clearTimeout(timer)
+        if (payload && payload.t === 'ev.result') {
+          if (payload.ok) resolve({ ok: true })
+          // 原样透传主机给的原因：这一条的命令空间大，"统一话术"会把
+          // 「这一代主机不支持」与「会话正在运行」抹成同一句没用的话。
+          else resolve({ ok: false, message: payload.message || '归档失败' })
+          return
+        }
+        resolve({ ok: false, message: '主机没有回应（超时或已断开）' })
+      }
+      timer = setTimeout(function () {
+        done(null)
+      }, COMMAND_TIMEOUT_MS)
+      self._cmdWaiters[cmdId] = done
+      // 只在**取消归档**时带 `archived: false`：缺省即归档，而载荷里多个
+      // "等于 false"的键看着像在说什么，其实与不发完全等价。
+      var cmd = { t: 'cmd.archive_session', cmdId: cmdId, sessionId: String(sessionId) }
+      if (archived === false) cmd.archived = false
+      if (!self.sendCmd(cmd)) done(null)
+    })
+  }
 }
 
 function translatePairFail(reason) {
