@@ -1,6 +1,7 @@
 'use strict'
 
 var client = require('../../core/client.js')
+var ScrollPolicy = require('../../core/scroll-policy.js').ScrollPolicy
 var theme = require('../../core/theme.js')
 var markdown = require('../../core/markdown.js')
 var env = require('../../core/env.js')
@@ -69,13 +70,6 @@ var MAX_BLOCKS = 400
  * **在 Android 上被系统忽略**（真机只会按 sizeType 压一次），所以这只是"尽力"，
  * 真正的体积纪律是 sizeType: ['compressed'] + chooseMedia 的 count 上限。
  */
-/** 贴底容差（px）：差这么多以内就算还贴着底。
- *  比 0 大是因为 iOS 落底会有回弹，正好差半个像素的位置会被判成"离开了"，
- *  于是跟随莫名其妙断掉 —— 用户报的就是这个。 */
-var SCROLL_BOTTOM_SLOP = 24
-/** 自作滚动之后、认定回弹帧的时间窗（ms）。只覆盖我们自己触发的那次滚动。 */
-var SCROLL_REBOUND_MS = 600
-
 var MAX_ATTACH = 4
 var IMAGE_QUALITY = 0.6
 /**
@@ -417,16 +411,14 @@ Page({
     this._mdNodes = {}
     this._deltaTimer = null
     this._thinkTimer = null
-    this._autoScroll = true
-    this._flip = false
-    this._SCROLL_BOTTOM_SLOP = SCROLL_BOTTOM_SLOP
-    this._SCROLL_REBOUND_MS = SCROLL_REBOUND_MS
-    this._programmaticUntil = 0
-    this._scrollH = 0
-    /** 最近一次真实滚动到的位置。「回到最新」要靠它判断"还在往底部走还是用户在回拖"。 */
-    this._scrollTop = 0
-    /** 重连补读完要强制回底部（见 _onEvent 的重连分支）。读完即消费。 */
-    this._pendingScrollBottom = false
+    /**
+     * 滚动状态与判据的**唯一**持有者（见 `core/scroll-policy.js` 的文件头）。
+     *
+     * 原来这里摊着 9 个字段，而判据内联在 `onScroll` 里、跨 6 个方法被写——
+     * 想判断"此刻跟不跟"得横着扫整页。现在只有 `this.scroll` 一个对象，
+     * 页面只负责把它的返回值画到 `data.atBottom` / `data.toView` 上。
+     */
+    this.scroll = new ScrollPolicy(function () { return Date.now() })
     this._draining = false
     this._historyBusy = false
     this._historyStarted = false
@@ -441,10 +433,18 @@ Page({
   onReady: function () {
     var self = this
     // 判断"是否贴底"需要视口高度，只在就绪时量一次（面板弹出会改变布局，忽略不计）
+    //
+    // ⚠️ 高度要**同时**交给 policy：贴底判据住在那里（`scroll-policy.js`），
+    // 只留一份在页面上等于它永远拿不到视口高度 → 每次 onScroll 都在
+    // "高度未知"那条早退里，于是"往上回看停跟随"这个最基础的判据**整条失效**。
+    // （这条是重构时踩的：原实现里两者是同一个字段，拆开就断了。）
     wx.createSelectorQuery()
       .select('.scroll')
       .boundingClientRect(function (r) {
-        if (r && r.height) self._scrollH = r.height
+        if (r && r.height) {
+          self._scrollH = r.height
+          self.scroll.setViewportHeight(r.height)
+        }
       })
       .exec()
   },
@@ -529,71 +529,31 @@ Page({
   },
 
   // ── 滚动：自动跟随 vs 用户回看 ────────────────────────────────────
+  //
+  // 判据全在 `core/scroll-policy.js` 里（纯函数、可单测）；这一段只负责
+  // "把它的结论画到 data 上"。原来这些判据内联在 onScroll 里、跨六个方法被写，
+  // 想回答"此刻跟不跟"得横着扫整页——见 scroll-policy.js 的文件头。
   onScroll: function (e) {
     var d = e.detail || {}
-    var h = this._scrollH
-    if (!h || typeof d.scrollHeight !== 'number') return
-    // 记住当前位置：「回到最新」要知道自己是**从哪儿**开始滚的（见 onJumpLatest）。
-    // 只在这一处写，所以它始终是最近一次真正滚动到的位置。
-    if (typeof d.scrollTop === 'number') this._scrollTop = d.scrollTop
-
-    // **默认永远跟底**（2026-10-05 用户：「以滑动底部作为默认行为……避免场景确实导致不跟滑」）。
-    //
-    // 旧写法在这里叠了三个各自为正的判据，互相打架：
-    //   1. deltaY < 0 → 立刻停跟（「提前量」）
-    //   2. 点完「回到最新」后 600ms 内不认这个提前量（回弹是假的）
-    //   3. 24px 的贴底容差
-    // 三者各有各的边界条件，一起逛就会「跟不上」——那就是用户报的。
-    //
-    // 现在只保留一条规则：**用户自己滑离底部才停**，判据只看位置。
-    // 自作自起的回弹帧（deltaY 为负）不能当作「用户滑起来了」，
-    // 所以 _programmaticUntil 这个时间窗只覆盖**我们自己触发**的滚动，
-    // 而不是「过了 600ms 就当作没人拖过」。
-    var atBottom = d.scrollTop + h >= d.scrollHeight - this._SCROLL_BOTTOM_SLOP
-    if (atBottom) {
-      this._programmaticUntil = 0
-      if (!this._autoScroll) {
-        this._autoScroll = true
-        this.setData({ atBottom: true })
-      }
-      return
+    // 高度每帧都喂一次：折叠会改视口高度，而贴底判据用它。policy 在高度为 0 时
+    // 不做任何判断（首帧之前那几帧就是这种情况）。
+    if (typeof d.clientHeight === 'number' && d.clientHeight > 0) {
+      this._scrollH = d.clientHeight
+      this.scroll.setViewportHeight(d.clientHeight)
     }
-    // 自作自滚的尾帧回弹：屏幕滚到底了但 deltaY 还是负的那一帧。
-    // 它不代表用户想回看，不能因此停跟。
-    //
-    // **向下滚的程序滚动也要豁免**（2026-10-06 取证）。原来这一条只挡 deltaY<0，
-    // 而 `onJumpLatest` 触发的是**向下**的滚动（deltaY>0）：于是每一帧中间帧
-    // （还没真的到底）都把 atBottom 打回 false，「回到最新」那颗按钮就在自己的
-    // 滚动途中**反复挂载/卸载**——渲染层实测 11 个中间帧里有 7 帧重新出现，
-    // 其中两帧正在播 jump-in 的 scale，肉眼是「啪一下又冒出来」。
-    //
-    // 判据不用「纯时间窗」而是**位置**：窗口内且 scrollTop 没有回退到起点之上，
-    // 说明它还在往底部走，那就是我们自己滚的。纯时间窗会把用户在 600ms 内
-    // 的真回看也吃掉（4656d70 刻意把窗口收窄过一次，别退回去）。
-    if (Date.now() < (this._programmaticUntil || 0)) {
-      var dy = d.deltaY || 0
-      if (dy < 0) return
-      if (dy >= 0 && d.scrollTop >= (this._programmaticFromTop || 0) - this._SCROLL_BOTTOM_SLOP) return
-    }
-    if (this._autoScroll) {
-      this._autoScroll = false
-      this.setData({ atBottom: false })
-    }
+    var r = this.scroll.onScroll(d)
+    // 只在**跟随状态变了**的那一帧 setData：这一帧每滑动一次就来一次，
+    // 而 setData 是这一页最贵的操作（同值提交也会触发渲染层 diff）。
+    if (r.atBottom !== this.data.atBottom) this.setData({ atBottom: r.atBottom })
   },
 
   onScrollToLower: function () {
-    if (!this._autoScroll) {
-      this._autoScroll = true
-      this.setData({ atBottom: true })
-    }
+    this.scroll.onScrollToLower()
+    if (!this.data.atBottom) this.setData({ atBottom: true })
   },
 
   onJumpLatest: function () {
-    this._autoScroll = true
-    // 落底回弹的尾帧会是负 delta：给一个短窗口让它别把刚接上的跟随又关掉
-    this._programmaticUntil = Date.now() + this._SCROLL_REBOUND_MS
-    // 起点：onScroll 里用来判断「还在往底部走还是用户在往回拖」（见 onScroll 那条注释）
-    this._programmaticFromTop = this._scrollTop || 0
+    this.scroll.onJumpLatest()
     this.setData({ atBottom: true })
     this._scrollToBottom()
   },
@@ -601,10 +561,11 @@ Page({
   /**
    * scroll-into-view 只在**值变化**时才生效，所以用一个 id 在 a/b 之间翻转的
    * 尾部锚点：既保证每次刷新都真的滚到底，又不依赖"最后一个气泡会长高"这种假设。
+   *
+   * 锚点的翻转由 policy 持有（`_flip`），页面只把它写进 `data.toView`。
    */
   _scrollToBottom: function () {
-    this._flip = !this._flip
-    this.setData({ toView: this._flip ? 'anchor-b' : 'anchor-a' })
+    this.setData({ toView: this.scroll.scrollToBottom() })
   },
 
   /**
@@ -615,13 +576,13 @@ Page({
    * 新的合法范围，但真机（尤其 iOS）不是每次都重新量：视口停在旧的高度上，
    * 下面就是一段**滚不到任何内容**的空白 —— 用户看到的就是
    * 「过程内容不见了，但是所占的位置还在」。
-   * 翻一次尾部锚点等于明确要求它按新的内容高度重新对齐一次。
    *
-   * **只在贴底时做**：正在往回翻历史的用户不该被这一下甩到底。
-   * 贴在底部时"重新对到底部"本来就是他期望的位置，所以这一步没有副作用。
+   * **只在贴底时做**（policy 的 afterFold 自己判）：正在往回翻历史的用户不该被
+   * 这一下甩到底；贴在底部时"重新对到底部"本来就是他期望的位置，没有副作用。
    */
   _afterFold: function () {
-    if (this._autoScroll) this._scrollToBottom()
+    var anchor = this.scroll.afterFold()
+    if (anchor) this.setData({ toView: anchor })
   },
 
   // ── 键盘：点空白收起 ──────────────────────────────────────────────
@@ -709,11 +670,10 @@ Page({
         // 那对"继续读刚才那段"是对的，但断链期间主机上很可能已经跑完了一整轮，
         // 停在旧位置等于让用户以为没收到新东西——而这一页的约定就是"最新在最底"。
         //
-        // 必须**先把跟随状态翻回来**：`_commit` 里那句 `if (this._autoScroll)`
-        // 是总闸，用户正在回看时它是关着的，只置 pending 标记根本不会滚。
-        this._autoScroll = true
+        // 必须**先把跟随状态翻回来**：`_commit` 里那次 `shouldFollowNewContent` 是总闸，
+        // 用户正在回看时它是关着的，只置 pending 标记根本不会滚。
+        this.scroll.onReconnect()
         this.setData({ atBottom: true })
-        this._pendingScrollBottom = true
         // 断了多久不知道，但主机那边的会话状态一定变了 —— 顶栏那个
         // 「运行中」要重新问一次，否则它会一直停在上一次的值上。
         this.client.listSessions()
@@ -1023,8 +983,9 @@ Page({
         }
         // 重连后强制回底部：`_commit` 的 noScroll 是"翻更早一页时别把用户甩下去"，
         // 断链重读不属于那一类——它要的是"最新在最底"。
-        var forceBottom = !!(self._pendingScrollBottom && !first)
-        self._pendingScrollBottom = false
+        // 读完即消费（policy 里做）：标记不清，下一页也会被当成重连拖到底——
+        // 而那时用户正在读更早的历史。
+        var forceBottom = self.scroll.consumePendingBottom(first)
         self._commit(merged, { noScroll: !firstPage && !forceBottom })
         // 待办快照：只应用**第一页**（最新一页）——更早页的快照是过期的，
         // 应用它等于把用户看到的清单往回拨。实时帧已经到过（_todoLive）就
@@ -2075,7 +2036,7 @@ Page({
     this.setData({ blocks: payload, turn: renumbered.turn, mdBodies: bodies }, function () {
       // 只在用户还贴着底部时跟随；他往上翻过就让他安静地读。
       // 「加载更早」那一路显式静音：往前插内容时跟底会把他从刚读到的位置甩走。
-      if (!(opts && opts.noScroll) && self._autoScroll) self._scrollToBottom()
+      if (self.scroll.shouldFollowNewContent(opts)) self._scrollToBottom()
     })
   },
 
@@ -2143,7 +2104,7 @@ Page({
       attachCount: images.length,
     })
     // 自己发的消息必须看到
-    this._autoScroll = true
+    this.scroll.onScrollToLower() // 刚发出去的这条必须自己看得见
     this.setData({ atBottom: true })
     this._commit(blocks)
     this._dispatch(text, pics, files)

@@ -28,12 +28,13 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "npm run verify && npm run md && npm run theme:check && npm run contrast",
+    "check": "npm run verify && npm run md && npm run scroll && npm run theme:check && npm run contrast",
     "verify": "node scripts/verify-miniprogram.mjs",
     "md": "node --test scripts/check-markdown.mjs",
     "theme": "node scripts/gen-mp-theme.mjs",
     "theme:check": "node scripts/gen-mp-theme.mjs --check",
-    "contrast": "node scripts/check-mp-contrast.mjs"
+    "contrast": "node scripts/check-mp-contrast.mjs",
+    "scroll": "node --test scripts/check-scroll.mjs"
   },
   "dependencies": {
     "tdesign-miniprogram": "^1.10.0",
