@@ -110,13 +110,18 @@ var MAX_IMAGE_TOTAL_BYTES = 512 * 1024
  * ⇒ 中继以 **1009** 关掉**整条连接**。用户看到的是"发出去就掉线"，而这一页的注释
  * 里写着"绝不能让它变成莫名掉线"——闸在那里，只是不在这条路上。
  *
- * 算式与线格式一一对应（改动必须同时改这四行与 `core/codec.js` 的 `seal`）：
- *   载荷 JSON ≈ 固定开销 + utf8(text) + Σ(名字/类型 + base64(附件原始字节))
+ * 算式与线格式一一对应（改动必须同时改这几处与 `core/codec.js` 的 `seal`）：
+ *   载荷 JSON ≈ 固定开销 + jsonEscapedBytes(text) + Σ(名字/类型 + base64(附件原始字节))
  *   密封 = base64(载荷JSON ‖ nonce(24B) ‖ MAC(16B))  →  ×4/3
  *   线上帧 = 密封结果 + 信封（t / sessionId / seq / clientId 与引号）
  *
  * **宁高勿低**：估大了只是提前拦下一条本来也发不出去的帧；估小了就是 1009 断链。
  * 所以每处都加了余量，而不是精确算。
+ *
+ * ⚠️ **正文那一项不是"数原始字符"**（2026-10-07 审计）：载荷要先过 `JSON.stringify`，
+ * 而它对 `"` `\` 与控制字符每个都翻倍。漏掉这层，正文里全是引号或全是换行时闸会**放行**
+ * 一条真实帧达 1.3 倍于中继上限的帧 ⇒ 1009 关掉整条连接 ⇒「发出去就掉线」，
+ * 且清空输入框那句 `setData` 已在拦截之前跑过、正文丢了。实测与判据见 `jsonEscapedBytes`。
  */
 var WIRE_FRAME_BUDGET = 1024 * 1024 // 中继 DRC_MAX_MSG_BYTES 的默认值（协议层 MAX_RELAY_MESSAGE_BYTES）
 var WIRE_FRAME_HEADROOM = 8 * 1024 // 与协议层留的信封余量同值：宁可少发，不可断链
@@ -126,18 +131,72 @@ function base64Len(byteLen) {
   return Math.ceil(byteLen / 3) * 4
 }
 
-/** 一条出站帧的线上字节估算（见 WIRE_FRAME_BUDGET 的注释）。 */
-function estimateWireFrameBytes(text, attachments) {
-  var textBytes = 0
-  try {
-    // encodeURIComponent + unescape 是小程序里量 UTF-8 字节的土办法（没有 Buffer）。
-    // 更稳的是 TextEncoder，但它的可用性在部分基础库上不一致；估高一点也安全。
-    textBytes = unescape(encodeURIComponent(String(text || ''))).length
-  } catch (e) {
-    textBytes = String(text || '').length * 3 // 兜底按最坏（中文 3 字节）估
+/**
+ * 一段文本经 `JSON.stringify` 之后的**字节数**（2026-10-07 审计新增的一层）。
+ *
+ * ## 为什么必须多算这一层
+ *
+ * 载荷不是把正文拼上去就发出去的：它先过 `JSON.stringify`（`core/codec.js` 的 `seal`），
+ * 而 stringify 对 `"` `\` 与控制字符（换行、回车、制表…）**每个都要翻倍**：
+ * 一个 `"` 变成 `\"` 是 2 字节，一个 `\n` 变成 `\` + `n` 也是 2 字节。
+ *
+ * 原先的估算只数了原始 UTF-8 字节，对这层膨胀**零感知**，而那一页的注释写着
+ * 「**宁高勿低**：估大了只是提前拦下一条本来也发不出去的帧；估小了就是 1009 断链」——
+ * 它恰好是低估那一侧。实测（对真 `codec.seal` 复算）：
+ *
+ *   正文 400KB 全是 `"`  → 估算 546KB（闸放行）｜真实帧 1092KB > 中继 1MB ⇒ **1009 断链**
+ *   正文 500KB 全是换行  → 估算 683KB（闸放行）｜真实帧 1366KB > 中继 1MB ⇒ **1009 断链**
+ *
+ * 用户看到的是「发出去就掉线」：闸放行 → 中继以 1009 关掉**整条连接**；
+ * 而清空输入框的那句 `setData` 已经在拦截之前跑过，正文也丢了。
+ *
+ * ⚠️ **为什么既有判据没抓到**：`e2e/mp-chat-blocks.test.mjs` 的两条正文用例都是
+ * `'x'.repeat(120*1024)` —— 纯 ascii 转义后**不变长**，于是这类膨胀在它们身上**测不出来**。
+ * 判断一份正文会不会膨胀，看的是**它有没有大量引号/反斜杠/换行**，不是它有多长。
+ *
+ * 做法：先数「必须被转义的字符」有多少个，每个多算 1 字节。
+ * 刻意不做「真的 stringify 一次」——那会让每帧都为一条长消息分配一个同样大的字符串，
+ * 而流式期每 100ms 一帧。宁可多算一点（见下面的系数）。
+ *
+ * @param {string} text
+ * @returns {number} 转义后的 UTF-8 字节数
+ */
+function jsonEscapedBytes(text) {
+  var s = String(text || '')
+  var escaped = 0
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i)
+    //  `"`  \  与 C0 控制字符（含换行/回车/制表）—— JSON.stringify 对它们加一个反斜杠。
+    //  代理对（emoji）占两个 char 码元但 UTF-8 仍是 4 字节，不在这里处理。
+    if (c === 0x22 || c === 0x5c || c < 0x20) escaped++
   }
+  var raw = 0
+  try {
+    raw = unescape(encodeURIComponent(s)).length
+  } catch (e) {
+    raw = s.length * 3 // 兜底按最坏（中文 3 字节）估
+  }
+  return raw + escaped
+}
+
+/**
+ * 一条出站帧的线上字节估算（见 WIRE_FRAME_BUDGET 的注释）。
+ *
+ * 算式与线格式一一对应（改动必须同时改这几行与 `core/codec.js` 的 `seal`）：
+ *   载荷 JSON ≈ 固定开销 + jsonEscapedBytes(text) + Σ(名字/类型 + base64(附件原始字节))
+ *   密封 = base64(载荷JSON ‖ nonce(24B) ‖ MAC(16B))  →  ×4/3
+ *   线上帧 = 密封结果 + 信封（t / sessionId / seq / clientId 与引号）
+ *
+ * ⚠️ 附件那几项**不再乘转义系数**：base64 字母表是 `A-Za-z0-9+/=`，
+ * `JSON.stringify` 对这些字符一个都不转义，所以它们的膨胀恰好为零 ——
+ * 这一点与正文**相反**，把两边混成同一个系数就会算错（附件是这页的大头）。
+ *
+ * **宁高勿低**：估大了只是提前拦下一条本来也发不出去的帧；估小了就是 1009 断链。
+ * 所以每处都加了余量，而不是精确算。
+ */
+function estimateWireFrameBytes(text, attachments) {
   var payload = 160 // 帧名 / cmdId / sessionId / 引号 / 转义余量
-  payload += textBytes
+  payload += jsonEscapedBytes(text)
   for (var i = 0; i < attachments.length; i++) {
     var a = attachments[i]
     payload += 64 // name + mediaType + 键名与引号
@@ -466,6 +525,15 @@ Page({
     // 不重启的话，从后台回来那张卡还挂着，而"还剩 N 秒"冻在离开时的数字上
     // （主机那边照常在走，用户按着一个看着还有 2 分钟的按钮其实早就作废了）。
     if (this.data.pendingPermission || this.data.pendingQuestion) this._startCardTick()
+    // 思考秒表**同样必须重启**（2026-10-07 审计）。上面那条卡片倒数有判据守着，
+    // 思考秒表漏了 —— 而它比卡片那两处更要紧：「思考中 12.0s」是用户唯一能看到
+    // "模型还活着"的信号，它一冻，用户看到的就是"页面卡死了"。
+    //
+    // 为什么不能指望别处把它叫醒：`_startThinkTick` 的其它三个入口
+    // （`_onRunState` / `_ensureThinkOpen` / `_onSessions`）都要**先收到一帧新的内核事件**
+    // 才会被调用，而切后台期间那些帧早就过去了；`onShow` 里唯一会发的那次
+    // `_maybeLoadHistory()` 又因为 `_historyStarted` 已置真而直接 return。
+    if (this.data.running) this._startThinkTick()
     this.client.listSessions()
     this._maybeLoadHistory()
     // 挂起的审批/提问是「以 dsh 为准」：进会话主动拉一次，别等主机恰好有变化。
@@ -950,7 +1018,16 @@ Page({
     var first = beforeSeq === undefined || beforeSeq === null
     // 先记下"拼进来之前的第一块"，翻页拼完要把它滚回视口，
     // 否则往前插内容会让页面原地跳动，用户刚读到的那一行会跑掉。
-    var anchor = this.data.blocks.length ? 'b' + this.data.blocks[0].key : ''
+    //
+    // ⚠️ **这个锚点只对「往前翻更早」那一路有意义**（2026-10-07 审计）。
+    // 它原来是无条件写进 `toView` 的，于是重连后重读第一页时把视口滚到了**块流最开头**：
+    // 那一页的约定是"重连直接到底部"，而 `atBottom` 又被重连那一支手动置 true
+    // 藏掉了「回到最新」那颗钮 —— 用户被留在几千行之前，界面上还没有任何回到底部的入口。
+    // `scroll.onReconnect()` 只置标记、不产生滚动动作，白调。
+    //
+    // 判据用 `!first`：第一页 = "最新一页"，它的落点由 policy 决定（重连 ⇒ 到底部，
+    // 普通首次读入 ⇒ `shouldFollowNewContent`）；更早页才需要"把刚才那块滚回视口"。
+    var anchor = !first && this.data.blocks.length ? 'b' + this.data.blocks[0].key : ''
     this._historyBusy = true
     if (first) this.setData({ historyState: 'loading' })
     else this.setData({ historyLoadingMore: true })
@@ -1080,17 +1157,27 @@ Page({
      */
     var onScreenText = {}
     var onScreenTool = {}
-    /** 本地回显的用户块按文本记**块 key 队列**：同文本可能有好几条（多重集消耗）。 */
+    /**
+     * 本地回显的用户块按**文本**记块 key 队列：同文本可能有好几条（多重集消耗）。
+     *
+     * ⚠️ 值存 `{text, key}` 而不是光一个 key（2026-10-07 审计）：判重不能只比相等，
+     * 得走 `_echoMatches` —— 主机给带附件的消息补了一段说明（`uploads.ts` 的
+     * `appendFileNote`），所以历史里的正文与用户输入的原文**本来就不相等**。
+     * 光存 key 就只能逐字比对，于是每一条带附件的消息在历史回放里都会**再画一遍**：
+     * 屏幕上两条一模一样的用户气泡，各带一个「第 N 轮」分隔。
+     * （实时路径早就为此写了 `_echoMatches`，历史路径没跟上——两处形状不一致，
+     * 症状又与 message/inbox 双发长得几乎一样，极难归因。）
+     */
     var localEcho = {}
     for (var i = 0; i < existing.length; i++) {
       var b = existing[i]
       if (b.msgId) onScreenText[b.msgId] = b.key
       if (b.kind === 'user') {
+        // 空正文（只发附件的消息）也要登记：那种消息的本地回显 text 是空串，
+        // 而历史那条是「附件说明」本身，不登记就必然匹配不上 → 一样两遍。
         var ut = String(b.text || '').trim()
-        if (ut) {
-          if (!localEcho[ut]) localEcho[ut] = []
-          localEcho[ut].push(b.key)
-        }
+        if (!localEcho[ut]) localEcho[ut] = []
+        localEcho[ut].push({ text: ut, key: b.key })
       }
       if (b.kind !== 'steps') continue
       for (var j = 0; j < b.items.length; j++) onScreenTool[b.items[j].callId] = b.key
@@ -1131,9 +1218,31 @@ Page({
       if (it.role === 'user') {
         // 本地已经立刻回显过的那句，历史里又来一遍。**按多重集消耗**而不是简单判相等：
         // 「继续」这种话整个会话里会出现很多次，判相等会把更早那一页里重复的那句也一起吞掉。
+        //
+        // 匹配用 `_echoMatches` 而不是 `===`（2026-10-07 审计）：那条规则专门为
+        // "回显正文与回传正文本来就不相等"这一族写的 —— 主机给带附件的消息补了一段
+        // 附件说明，而那正是实时路径（`_onUserEcho`）已经在用的判据。这里逐字相等就漏。
         var echo = String(it.delta || '').trim()
-        if (echo && localEcho[echo] && localEcho[echo].length) {
-          settle(localEcho[echo].shift())
+        var hit = null
+        // ⚠️ 必须扫**全部**桶，不能只查 `localEcho[echo]`：带附件的那条历史正文
+        // 与本地回显的原文不相等，按字面去查表必然查不到（那正是本条要修的缺陷）。
+        // 桶少（本地回显的条数），扫一遍的代价可以忽略。
+        for (var bucket in localEcho) {
+          if (!Object.prototype.hasOwnProperty.call(localEcho, bucket)) continue
+          var slot = localEcho[bucket]
+          for (var q = 0; q < slot.length; q++) {
+            if (this._echoMatches(slot[q].text, echo)) {
+              hit = slot.splice(q, 1)[0]
+              break
+            }
+          }
+          if (hit) {
+            if (!slot.length) delete localEcho[bucket]
+            break
+          }
+        }
+        if (hit) {
+          settle(hit.key)
           continue
         }
         out = this._append(out, { key: 'r' + this._counter++, kind: 'turn', label: '', time: '' })
@@ -2195,6 +2304,46 @@ Page({
 
   // ── 图片附件：加号 → 相册（拍照与文件这一代先不做）───
   /**
+   * 附件入口的能力守卫（2026-10-07 审计新增）。
+   *
+   * ## 为什么需要
+   *
+   * `env.probe()` 早就探到了 `chooseMessageFile` / `chooseMedia` / `showActionSheet`
+   * （诊断行里就是 `CHOOSE_MSG_FILE=` / `ACTION_SHEET=` 两项，2026-10-06 还专门补的），
+   * 但**没有任何调用点读它们**。于是老基础库上：
+   *
+   *   点「加号 → 文件」→ `wx.chooseMessageFile is not a function`
+   *
+   * 一句 `TypeError` 抛在 `showActionSheet` 的 success 回调里，用户看到的只有
+   * 「点了没反应」，而他唯一能做的事（把诊断行发回来）里恰恰写着缺哪个能力 ——
+   * 探到了、报出来了，就是没人读。
+   *
+   * 这一页其余每一处 API 调用都有守卫（`compressImage`、`canvas`、`scanCode`…），
+   * 附件这两条是**唯一**漏掉的，所以那不是"疏忽"，是没写完。
+   *
+   * @param {string} apiName 宿主 API 名（也是 probe 里的字段名）
+   * @param {string} what 用户视角的这件事（"选文件"/"选图片"/"打开那个菜单"）
+   * @returns {boolean} 有这个能力吗（false 时已经提示过了，直接返回）
+   */
+  _requireApi: function (apiName, what) {
+    var p = env.probe()
+    if (p && p[apiName]) return true
+    wx.showModal({
+      title: '当前环境无法' + what,
+      content:
+        '这个运行环境没有 ' +
+        apiName +
+        '（' +
+        (p ? p.global : '?') +
+        '）。\n' +
+        '请在微信开发者工具里运行，或把自己的 AppID 用真机调试方式打开。\n' +
+        '（可点下面的「复制环境自检」把这行诊断发回来，里面写着缺的是哪个能力。）',
+      showCancel: false,
+    })
+    return false
+  },
+
+  /**
    * 2026-10-05 用户改主意：'文件要放在加号里面，弹出选图片还是文件'。
    * 1.1.5 删掉那个二级菜单，是因为当时只有图片、多一次点击纯属浪费；
    * 现在有图片和文件两种，选哪个是用户的决定，不是我能替他定的。
@@ -2212,6 +2361,8 @@ Page({
       wx.showToast({ title: '一条消息最多带 ' + MAX_ATTACH + ' 个附件', icon: 'none' })
       return
     }
+    // 守卫：`wx.showActionSheet` 不在极老的容器里，而抛在回调里等于"点了没反应"
+    if (!this._requireApi('showActionSheet', '打开附件菜单')) return
     wx.showActionSheet({
       itemList: ['图片', '文件'],
       success: function (r) {
@@ -2230,6 +2381,8 @@ Page({
       wx.showToast({ title: '一条消息最多带 ' + MAX_ATTACH + ' 个附件', icon: 'none' })
       return
     }
+    // 守卫：`chooseMedia` 是基础库 2.10.0 才有的 API，比这一代其它任何一个都新
+    if (!this._requireApi('chooseMedia', '从相册选图')) return
     wx.chooseMedia({
       count: room,
       mediaType: ['image'],
@@ -2305,6 +2458,10 @@ Page({
       wx.showToast({ title: '一条消息最多带 ' + MAX_ATTACH + ' 个附件', icon: 'none' })
       return
     }
+    // 守卫（2026-10-07 审计）：老基础库上没有 `chooseMessageFile`，
+    // 直接调它抛一句 TypeError，而用户看到的是"点了加号没反应"——
+    // 与"文件读不出来"那条 toast 长得很像，用户会以为是自己文件的问题。
+    if (!this._requireApi('chooseMessageFile', '从微信会话里选文件')) return
     wx.chooseMessageFile({
       count: room,
       success: function (r) {

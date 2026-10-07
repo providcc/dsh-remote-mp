@@ -69,6 +69,11 @@ function collect() {
     compressImage: has(api, 'compressImage'),
     // 文件附件入口：老 SDK 没有这个 API 时按钮要点得动但要说清为什么选不了
     chooseMessageFile: has(api, 'chooseMessageFile'),
+    // 相册选图。**基础库 2.10.0 才引入**，比这一代其它任何一个 API 都新 ——
+    // 所以它同样要进守卫（chat.js 的 `_requireApi('chooseMedia', …)`）。
+    // 2026-10-07 审计补的：它此前既没被探、也没被读，于是老容器上点「加号 → 图片」
+    // 抛一句 TypeError，而用户看到的只是"点了没反应"。
+    chooseMedia: has(api, 'chooseMedia'),
     showActionSheet: has(api, 'showActionSheet'),
     storage: has(api, 'getStorageSync') && has(api, 'setStorageSync'),
     scanCode: has(api, 'scanCode'),
@@ -105,6 +110,7 @@ function summary() {
     // 而它们恰好是"加号"那个菜单的两条路——老 SDK 上文件入口点不动，用户唯一能做的事
     // 就是把这行诊断发回来，那行里却没有"缺的是哪个"，等于让用户白发一次。
     'CHOOSE_MSG_FILE=' + (p.chooseMessageFile ? 'yes' : 'no'),
+    'CHOOSE_MEDIA=' + (p.chooseMedia ? 'yes' : 'no'),
     'ACTION_SHEET=' + (p.showActionSheet ? 'yes' : 'no'),
   ]
   return parts.join(' ')

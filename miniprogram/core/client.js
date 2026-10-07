@@ -135,35 +135,62 @@ class DrcClient {
    * 非法输入就地拒绝并给一句中文，不放进网络来回 —— 更不放到 derivePskKey 里
    * 变成一句英文异常（那时用户已经"配对上了"，却什么都做不了）。
    *
+   * ## ⚠️ 校验必须在**赋值之前**（2026-10-07 审计）
+   *
+   * 原来的写法是先 `this.server = …` / `this.psk = …` / `this._pendingToken = …`，
+   * 再逐项校验、遇错 `return`。而那些 `return` 都发生在 `if (this.sock) this.sock.close()`
+   * **之前**，于是已配对的用户扫到一张坏码时被留在一个自相矛盾的状态里：
+   *
+   *   · `this.psk` 已被换成那张坏码里的值，**旧的可用 PSK 被覆盖掉了**；
+   *   · 旧 convId 与两把旧密钥都还在 ⇒ `isPaired()` 为 true
+   *     ⇒ sessions 页（`onShow` 用 `isPaired()` 决定显不显示主机卡）显示「已配对到 xxx」；
+   *   · 而 `newSession` / `sendPromptReceipt` 用 `status !== 'online'` 全部拒绝
+   *     ⇒ 「还没有连上主机，请先完成配对」。
+   *
+   * 用户被困在一张"说已配对、却什么都发不出去"的界面上，而界面让他重扫 ——
+   * 他刚扫的就是这张码。**所以改成：先算局部变量、校验通过再一次性提交。**
+   *
    * @param {Object} opts { server?, psk?, token? } —— token 触发一次全新配对。
    */
   connect(opts) {
     opts = opts || {}
-    if (opts.server) {
-      this.server = opts.server
-      store.setServerUrl(opts.server)
-    }
-    if (opts.psk) this.psk = opts.psk
-    if (opts.token) this._pendingToken = codec.normalizePairingToken(opts.token)
+    // ── 1. 先算，不提交 ──────────────────────────────────────────────
+    var nextServer = opts.server || this.server || store.serverUrl()
+    var nextPsk = opts.psk || this.psk || ''
+    var nextToken = opts.token ? codec.normalizePairingToken(opts.token) : null
 
-    if (!this.server) {
+    // ── 2. 逐项校验（顺序按"用户最先需要知道的那条"排）──────────────
+    if (!nextServer) {
       this._setStatus('needs-pair', '请先扫码或填写中继服务地址')
       return
     }
-    if (!codec.isValidPairingServer(this.server)) {
+    if (!codec.isValidPairingServer(nextServer)) {
       this._setStatus('needs-pair', '中继地址必须以 ws:// 或 wss:// 开头')
       return
     }
-    if (this.psk && !codec.isValidPsk(this.psk)) {
-      this._setStatus('needs-pair', '配对密钥不合法（应为 base64 的 16 字节），请重新扫码')
+    // ⚠️ `nextPsk && !isValidPsk(nextPsk)` 这个写法会**因为空串短路而跳过整个校验**，
+    // 而 `derivePskKey('')` **不抛**：它照常算出 32 字节
+    // （K = SHA-512("dsh-rc/v1" ␟ 方向 ␟ convId ␟ 空)），那把 key 中继自己就能派生 ——
+    // 它知道 convId、namespace 与方向，全是公开的。所以"没有 psk"必须当成**不合法**，
+    // 而不是"不用校验"。
+    if (!codec.isValidPsk(nextPsk)) {
+      this._setStatus(
+        'needs-pair',
+        nextPsk ? '配对密钥不合法（应为 base64 的 16 字节），请重新扫码' : '缺少配对密钥，请扫描主机二维码',
+      )
       return
     }
-    if (opts.token && !codec.isValidPairingToken(this._pendingToken)) {
-      this._pendingToken = null
+    if (nextToken && !codec.isValidPairingToken(nextToken)) {
       this._setStatus('needs-pair', '配对码必须是主机显示的 6 位数字')
       return
     }
     if (!this.clientId) this.clientId = store.installId()
+
+    // ── 3. 校验全过，一次性提交 ──────────────────────────────────────
+    this.server = nextServer
+    this.psk = nextPsk
+    this._pendingToken = nextToken
+    if (opts.server) store.setServerUrl(nextServer)
 
     this._setStatus('connecting', '正在连接 ' + this.server)
 
@@ -364,11 +391,35 @@ class DrcClient {
       case 'enc-batch':
         // 中继会把主机发出的批量帧原样转发（server.forwardEncBatch），所以这条
         // 路径是活的：逐条解开当普通 enc 处理。
-        if (Array.isArray(f.items)) {
-          for (var i = 0; i < f.items.length; i++) {
-            this._onEncrypted({ sessionId: f.sessionId, ciphertext: f.items[i].ciphertext })
-          }
+        //
+        // ⚠️ 两道守卫（2026-10-07 审计），都因为"中继是唯一能自由构造畸形帧的人"：
+        //
+        // ① **形状**：items 未必是数组、元素未必是对象、`ciphertext` 未必是字符串。
+        //    原来直接 `f.items[i].ciphertext`，一个 `null` 元素就是一句 `TypeError`
+        //    逃出 `_onFrame` —— 而 `_onFrame` 只对 `JSON.parse` 做了 try/catch，
+        //    switch 内部**没有保护**。后果不是这条帧失败，是后面所有帧的处理交给宿主。
+        //    ⚠️ 形状不对的 item **跳过、不计失败**：它不是"密钥不匹配"，
+        //    把它算成解密失败等于让一条畸形帧把一个健康配对误杀。
+        // ② **一帧只算一次失败**：`_decryptFails` 的"给两次机会"是为了免得一条损坏的帧
+        //    误杀一个健康配对（见 `_countDecryptFail`）。而在批量帧下"一帧"里就有 N 个
+        //    item，逐条各计一次 ⇒ **一帧就能把两次机会烧光**。批量帧是活路径。
+        //
+        // 口径要分清两种"这帧没解出东西"：
+        //   · **有形状合法却解不开的** ⇒ 这帧真的坏了，记**一次**（不论坏了几条）；
+        //   · **全是形状不对的** ⇒ 这是畸形帧，不是密钥不匹配，**一次都不记**。
+        //     否则两条纯畸形的帧就能把一个健康配对杀掉 —— 而畸形是中继随手能造的，
+        //     真密钥不匹配却只在中继真的换了密钥时才出现。
+        if (!Array.isArray(f.items)) return // 畸形帧：不许动配对状态
+        var opened = 0
+        var tried = 0
+        for (var i = 0; i < f.items.length; i++) {
+          var it = f.items[i]
+          if (!it || typeof it.ciphertext !== 'string' || !it.ciphertext) continue
+          tried++
+          // countFail=false：这一帧的失败由下面**按整帧**记一次，不逐条记
+          if (this._onEncrypted({ sessionId: f.sessionId, ciphertext: it.ciphertext }, false)) opened++
         }
+        if (tried > 0 && !opened) this._countDecryptFail()
         return
       default:
         return
@@ -401,19 +452,32 @@ class DrcClient {
 
   _onPaired(f) {
     this._pendingToken = null
-    this.convId = f.sessionId
-    this.hostId = f.hostId || ''
-    this.kC2H = codec.derivePskKey(this.psk, 'c2h', this.convId)
-    this.kH2C = codec.derivePskKey(this.psk, 'h2c', this.convId)
+    var convId = f.sessionId
+    var hostId = f.hostId || ''
+    // ⚠️ **重放同一个 paired 帧不许把 nonce 计数器打回 0**（2026-10-07 审计）。
+    //
+    // 原来这里无条件 `nonceCounter: 0`。而中继是**零知识**的：它不需要任何密钥就能
+    // 重放一个 `paired`（帧是明文控制面帧，它经手过就能再交一份）。一旦计数器归零，
+    // 下一条命令的 24 字节 nonce = 同一前缀 ‖ 计数器 1 —— 与之前用过的那条**逐字节相同**
+    // （`noncePrefix` 只绑 psk+会话+安装，三者都没变），于是密钥流复用：
+    // 相同明文得到逐字节相同的密文，中继把两条一 XOR 就是明文之差。
+    //
+    // 所以只有**真的要换一把密钥**（新会话 + 新 PSK）才允许计数器从头开始；
+    // 同一个 convId 的重复 `paired` 保留盘上已有的计数器。
+    var sameConv = convId === this.convId
     var pairing = {
       server: this.server,
       psk: this.psk,
-      convId: this.convId,
-      hostId: this.hostId,
+      convId: convId,
+      hostId: hostId,
       hostLabel: this.hostLabel,
-      nonceCounter: 0,
-      pairedAt: Date.now(),
+      nonceCounter: sameConv && this._resume ? Number(this._resume.nonceCounter || 0) : 0,
+      pairedAt: sameConv && this._resume ? this._resume.pairedAt || Date.now() : Date.now(),
     }
+    this.convId = convId
+    this.hostId = hostId
+    this.kC2H = codec.derivePskKey(this.psk, 'c2h', this.convId)
+    this.kH2C = codec.derivePskKey(this.psk, 'h2c', this.convId)
     this._resume = pairing
     store.savePairing(pairing)
     this._setStatus('online', '已配对到 ' + (this.hostLabel || this.hostId || '主机'))
@@ -423,20 +487,31 @@ class DrcClient {
   }
 
   // ── 接收：数据面（密文） ──────────────────────────────────────────
-  _onEncrypted(f) {
-    if (!this.kH2C) return
+  /**
+   * 解一帧密文。
+   *
+   * @param {boolean} [countFail] 默认 true = 解不开时记一次失败（`_countDecryptFail`）。
+   *   批量帧那条路传 false，因为"一帧该记几次"有分歧：逐条各记一次会让**一帧**就
+   *   烧光两次机会（见 `enc-batch`）。默认 true 是为了保住直接调用它的那些判据
+   *   （`e2e/mp-client.test.mjs` 第 13 条就是直接调本函数喂坏密文的）。
+   * @returns {boolean} 真的解开了没有。
+   */
+  _onEncrypted(f, countFail) {
+    if (!this.kH2C) return false
     var payload = codec.open(this.kH2C, f)
     if (!payload) {
       // 密钥对不上意味着这个会话已经废了 —— 之后每一帧都会同样失败。
-      // 别让用户对着空列表发呆：丢掉配对并明说怎么办。先给两次机会，
-      // 免得一条损坏的帧误杀一个健康的配对。
-      this._decryptFails++
-      if (this._decryptFails >= 2) {
-        this._resetPairing('配对已失效（密钥不匹配），请重新扫码')
-        return
+      // 别让用户对着空列表发呆：丢掉配对并明说怎么办。两次机会是为了免得
+      // **一条**损坏的帧误杀一个健康的配对（计数与阈值都只在 `_countDecryptFail` 里）。
+      //
+      // ⚠️ 提示**照发**、计数才受 `countFail` 控制：批量帧那一路传 false 只是为了
+      // "按整帧记一次"，不能连提示一起省掉 —— 静默是这一族缺陷里最难查的那种。
+      if (countFail === false) this.emit({ kind: 'error', message: '有一条数据无法解密，若持续出现请重新扫码配对' })
+      else {
+        this._countDecryptFail()
+        this.emit({ kind: 'error', message: '有一条数据无法解密，若持续出现请重新扫码配对' })
       }
-      this.emit({ kind: 'error', message: '有一条数据无法解密，若持续出现请重新扫码配对' })
-      return
+      return false
     }
     this._decryptFails = 0
     // 回执类载荷：它是**回答我们某一次请求**的，不是一条事件。所以先结算那个 Promise，
@@ -452,7 +527,7 @@ class DrcClient {
       // 或首屏历史永远停在 loading（超时同样会被这个早退吃掉）。
       if (waiter) {
         waiter(payload)
-        return
+        return true
       }
     }
     // 每个页面都要的簿记放在这里，页面保持「哑」
@@ -474,6 +549,22 @@ class DrcClient {
       this.model = payload
     }
     this.emit({ kind: 'payload', payload: payload })
+    return true
+  }
+
+  /**
+   * 记一次"这条数据解不开"，到两次就丢配对。
+   *
+   * 单独抽出来是因为**一帧该记几次**是有分歧的（见 `enc-batch`）：
+   * 普通 `enc` 帧一帧一条、记一次；批量帧一帧 N 条，按整帧记一次。
+   * 阈值 2 与"免得一条损坏的帧误杀一个健康配对"这个意图一起看：
+   * 连续**两帧**都解不开才是真解不开（密钥真的不对了），单帧解不开只是网络噪声。
+   */
+  _countDecryptFail() {
+    this._decryptFails++
+    if (this._decryptFails >= 2) {
+      this._resetPairing('配对已失效（密钥不匹配），请重新扫码')
+    }
   }
 
   // ── 页面用的便捷指令 ──────────────────────────────────────────────
