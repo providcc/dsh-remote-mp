@@ -65,9 +65,6 @@ function ScrollPolicy(now, options) {
   this._flip = false
 }
 
-ScrollPolicy.BOTTOM_SLOP = BOTTOM_SLOP
-ScrollPolicy.REBOUND_MS = REBOUND_MS
-
 /** 视口高度变了（首帧 / 折叠后）。高度未知时**不**做任何贴底判断。 */
 ScrollPolicy.prototype.setViewportHeight = function (height) {
   if (typeof height === 'number' && isFinite(height) && height > 0) this.viewportHeight = height
@@ -203,16 +200,6 @@ ScrollPolicy.prototype.consumePendingBottom = function (isFirstPage) {
   var force = !!(this.pendingBottom && !isFirstPage)
   this.pendingBottom = false
   return force
-}
-
-/** 打开一条会话时的初值：跟底、贴底。 */
-ScrollPolicy.prototype.reset = function () {
-  this.following = true
-  this.scrollTop = 0
-  this.viewportHeight = 0
-  this._programmaticUntil = 0
-  this._programmaticFromTop = 0
-  this.pendingBottom = false
 }
 
 module.exports = { ScrollPolicy: ScrollPolicy, BOTTOM_SLOP: BOTTOM_SLOP, REBOUND_MS: REBOUND_MS }
