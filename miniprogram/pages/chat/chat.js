@@ -149,6 +149,9 @@ function estimateWireFrameBytes(text, attachments) {
   }
   return base64Len(payload + 40) + 160
 }
+/** 主机给带附件的用户消息补的那段说明的开头（`shell/uploads.ts` 的 appendFileNote）。 */
+var FILE_NOTE_HEAD = '[文件附件 '
+
 var MAX_TEXT_PER_BLOCK = 20000
 /**
  * **正文总量上限（字符）** —— 块数上限不封顶字节，这条才是 setData 的护栏。
@@ -432,19 +435,25 @@ Page({
 
   onReady: function () {
     var self = this
-    // 判断"是否贴底"需要视口高度，只在就绪时量一次（面板弹出会改变布局，忽略不计）
-    //
-    // ⚠️ 高度要**同时**交给 policy：贴底判据住在那里（`scroll-policy.js`），
-    // 只留一份在页面上等于它永远拿不到视口高度 → 每次 onScroll 都在
-    // "高度未知"那条早退里，于是"往上回看停跟随"这个最基础的判据**整条失效**。
-    // （这条是重构时踩的：原实现里两者是同一个字段，拆开就断了。）
+    /**
+     * 视口高度的**唯一**来源，就在这里量一次。
+     *
+     * 为什么只能在这里：wx 的 scroll 事件 detail 只有 `scrollTop` / `scrollLeft` /
+     * `scrollHeight` / `scrollWidth`（官方类型定义 `ScrollOffsetCallbackResult`），
+     * **没有视口高度**——贴底判断需要的那个数，滚动帧里根本不存在。
+     * 所以"每帧刷新高度"那种写法是**死的**：读一个真机永远不会给的字段。
+     * （重构时一度就是这么写的，现在只留这一处。）
+     *
+     * 面板弹出会改变布局，那一刻的高度按原样忽略——它不影响"离底部多远"这个判断。
+     *
+     * ⚠️ 量到之后必须**交给 policy**：贴底判据住在那里。页面自己不留一份，
+     * 免得出现"两处各存一个高度、其中一处没人更新"（重构时踩过：policy 永远拿到 0，
+     * 于是每帧都走"高度未知"那条早退，「往上回看停跟随」整条判据失效）。
+     */
     wx.createSelectorQuery()
       .select('.scroll')
       .boundingClientRect(function (r) {
-        if (r && r.height) {
-          self._scrollH = r.height
-          self.scroll.setViewportHeight(r.height)
-        }
+        if (r && r.height) self.scroll.setViewportHeight(r.height)
       })
       .exec()
   },
@@ -534,14 +543,7 @@ Page({
   // "把它的结论画到 data 上"。原来这些判据内联在 onScroll 里、跨六个方法被写，
   // 想回答"此刻跟不跟"得横着扫整页——见 scroll-policy.js 的文件头。
   onScroll: function (e) {
-    var d = e.detail || {}
-    // 高度每帧都喂一次：折叠会改视口高度，而贴底判据用它。policy 在高度为 0 时
-    // 不做任何判断（首帧之前那几帧就是这种情况）。
-    if (typeof d.clientHeight === 'number' && d.clientHeight > 0) {
-      this._scrollH = d.clientHeight
-      this.scroll.setViewportHeight(d.clientHeight)
-    }
-    var r = this.scroll.onScroll(d)
+    var r = this.scroll.onScroll(e.detail || {})
     // 只在**跟随状态变了**的那一帧 setData：这一帧每滑动一次就来一次，
     // 而 setData 是这一页最贵的操作（同值提交也会触发渲染层 diff）。
     if (r.atBottom !== this.data.atBottom) this.setData({ atBottom: r.atBottom })
@@ -1399,6 +1401,38 @@ Page({
   },
 
   /**
+   * 宿主机回传的用户消息，与本地那条回显**是不是同一条**。
+   *
+   * 原来这里是逐字相等（`===`），而那条判据在**带附件的消息上必然失效**：
+   * 主机把附件落盘后会在正文后面补一段说明（`uploads.ts` 的 `appendFileNote`）：
+   *
+   *     你发出去的正文
+   *
+   *     [文件附件 2 个，已存到本机]
+   *     1. /Users/…/a.pdf（application/pdf）
+   *
+   * 手机上的本地回显只有上面那两行，于是回传与回显**对不上** → 匹配失败 →
+   * 落到"追加新块"那条兜底 → **屏幕上多出一条一模一样的用户气泡**。
+   * （用户 2026-10-07 实测；它长得跟 §0.10 的 message/inbox 双发一模一样，
+   * 但根因不是双发，是**回显正文与回传正文本来就不相等**。）
+   *
+   * 只放行一种"多出来的部分"：那段附件说明。别放宽成前缀相等——
+   * 「ok」与「okay」会被错认成同一条，而确认错一条的代价是把一条消息永远留在
+   * "未确认"上。空正文（只发附件）也要能配上：这时回传正文就是那段说明本身。
+   */
+  _echoMatches: function (localText, incomingText) {
+    var a = String(localText || '').trim()
+    var b = String(incomingText || '').trim()
+    if (!b) return false
+    if (a === b) return true
+    // 唯一放行的"不一样"：宿主在正文后面补的那段附件说明。
+    // ⚠️ 这**一道**就是全部的闸——不需要（也不该）再加一条"b 必须以 a 开头"：
+    // 那样只是把同一件事说两遍，而两遍里总有一遍会先被人放宽。
+    // 空正文（只发附件）走同一条：a 为空，切出来的就是 b 本身，正好是那段说明。
+    return b.slice(a.length).replace(/^\s+/, '').indexOf(FILE_NOTE_HEAD) === 0
+  },
+
+  /**
    * 宿主机回传的用户消息。本地已经回显过同一条，就把它标成"已确认"并丢弃这次回传；
    * 文本对不上（例如是另一个客户端发的）才作为新块追加。
    *
@@ -1412,7 +1446,7 @@ Page({
     for (var i = blocks.length - 1; i >= 0; i--) {
       var b = blocks[i]
       if (b.kind !== 'user' || b.confirmed) continue
-      if (String(b.text || '').trim() !== want) break // 最近的一条对不上，那就是另一条消息
+      if (!this._echoMatches(b.text, want)) break // 最近的一条对不上，那就是另一条消息
       var next = blocks.slice()
       var copy = copyBlock(b)
       copy.confirmed = true

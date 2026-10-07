@@ -87,40 +87,65 @@ ScrollPolicy.prototype.setViewportHeight = function (height) {
  * （4656d70 刻意把窗口收窄过一次，别退回去）。
  *
  * @param {{scrollTop?: number, scrollHeight?: number, deltaY?: number}} detail
- * @returns {{following: boolean, atBottom: boolean}}
+ * @returns {{following: boolean, atBottom: boolean}} **页面该画什么**，见下面这段——
+ *
+ *   `following` = 还跟不跟底（新内容要不要把他拽走）
+ *   `atBottom`   = 「回到最新」那颗按钮**该不该出现**
+ *
+ * ⚠️ 这两个**不是同一件事**，中间帧就是它们分叉的地方：程序滚动正在往下走时
+ * `following` 仍是 true，而物理上确实"还没到底"。那一段 `atBottom` 必须**保持 true**
+ * （按钮不出现），否则按钮会在自己的滚动途中反复挂载/卸载——肉眼是"啪一下又冒出来"。
+ * 抽出来时这里一度写成"物理上在不在底部"，被既有判据当场抓住（见下面那两条分支的注释）。
  */
 ScrollPolicy.prototype.onScroll = function (detail) {
   var d = detail || {}
   var h = this.viewportHeight
-  if (!h || typeof d.scrollHeight !== 'number') return { following: this.following, atBottom: this.following }
+
+  // ── 第 0 相：量不到视口高度 ──────────────────────────────────────
+  // scroll 事件里没有视口高度（见 chat.js `onReady` 的注释），而它只有在 `onReady`
+  // 量到之后才有值。这几帧**什么也不判**：判不了"贴底"却把跟随关掉，是最坏的一种错。
+  if (!h || typeof d.scrollHeight !== 'number') return this._view()
+
   // 只在这一处写，所以它始终是最近一次真正滚动到的位置。
   if (typeof d.scrollTop === 'number') this.scrollTop = d.scrollTop
 
-  var atBottom = d.scrollTop + h >= d.scrollHeight - this._bottomSlop
-  if (atBottom) {
+  // ── 第 1 相：真的到底了 ──────────────────────────────────────────
+  // 唯一无条件接回跟随的地方。顺带清掉回弹窗口：已经到底了，之后的帧不再有豁免的意义。
+  if (d.scrollTop + h >= d.scrollHeight - this._bottomSlop) {
     this._programmaticUntil = 0
     this.following = true
     return { following: true, atBottom: true }
   }
 
-  var now = this._now()
-  if (now < this._programmaticUntil) {
+  // ── 第 2 相：还没到底，但可能正**我们自己**在滚 ────────────────────
+  // 窗口内按**位置**而不是纯时间判断：scrollTop 没有回退到起点之上 ⇒ 它还在往底部走
+  // ⇒ 这是我们自己的滚动中间帧，不是用户想回看。
+  // 纯时间窗会把用户在这 REBOUND_MS 里的真回看也吃掉（4656d70 刻意把窗口收窄过一次）。
+  //
+  // ⚠️ 这一相 `atBottom` 必须**保持 true**（= `following`），不是"物理上在不在底部"：
+  // 「回到最新」是向下滚的，这些帧还没真的到底，若报 false，页面就会把那颗按钮在
+  // 自己的滚动途中反复挂载/卸载——肉眼是"啪一下又冒出来"
+  // （2026-10-06 真机取证：11 个中间帧里 7 帧重新出现，其中两帧正在播 jump-in 的 scale）。
+  // 抽出来时这里一度写成 `false`，被既有判据「FAB：向下滚的中间帧不许把它重新挂上」当场抓住。
+  if (this._now() < this._programmaticUntil) {
     var dy = d.deltaY || 0
-    // ⚠️ 这两条分支的 `atBottom` 必须回 `this.following`（此刻是 true），**不是 false**：
-    // 「回到最新」是向下滚的，这些中间帧**还没真的到底**，若报 atBottom=false，
-    // 页面就会把「回到最新」那颗按钮在自己的滚动途中重新挂上——肉眼是"啪一下又冒出来"
-    // （2026-10-06 真机取证：11 个中间帧里 7 帧重新出现，其中两帧正在播 jump-in 的 scale）。
-    //
-    // 抽出来时这里一度写成 `false`，被既有判据「FAB：向下滚的中间帧不许把它重新挂上」
-    // 当场抓住——这正是把判据变成纯函数的价值：它能单测，而内联在页面里时只能靠真机看。
-    if (dy < 0) return { following: this.following, atBottom: this.following }
-    if (d.scrollTop >= this._programmaticFromTop - this._bottomSlop) {
-      return { following: this.following, atBottom: this.following }
-    }
+    var notOverscrolledBack = d.scrollTop >= this._programmaticFromTop - this._bottomSlop
+    if (dy < 0 || notOverscrolledBack) return this._view()
   }
 
+  // ── 第 3 相：出窗了、位置也回退了，这就是用户在回看 ──────────────
   this.following = false
   return { following: false, atBottom: false }
+}
+
+/**
+ * "什么都不用改"时给页面的答案：`atBottom` 跟 `following` 走。
+ *
+ * 「回到最新」按钮的可见性是**跟随状态**的函数，不是位置的函数——按钮的语义是
+ * "你不在最新，往下走"，而"正在往下滚"这件事本身不算"不在最新"。
+ */
+ScrollPolicy.prototype._view = function () {
+  return { following: this.following, atBottom: this.following }
 }
 
 /** 用户滑到最底端（scroll-view 的 `onScrollToLower`）：无条件接回跟随。 */
