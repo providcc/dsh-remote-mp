@@ -101,6 +101,11 @@ function summary() {
     'COMPRESS=' + (p.compressImage ? 'yes' : 'no'),
     'STORAGE=' + (p.storage ? 'yes' : 'no'),
     'SCAN=' + (p.scanCode ? 'yes' : 'no'),
+    // 这两个 2026-10-06 补上：它们之前**探到了却不报**（collect 里有、summary 里没有）。
+    // 而它们恰好是"加号"那个菜单的两条路——老 SDK 上文件入口点不动，用户唯一能做的事
+    // 就是把这行诊断发回来，那行里却没有"缺的是哪个"，等于让用户白发一次。
+    'CHOOSE_MSG_FILE=' + (p.chooseMessageFile ? 'yes' : 'no'),
+    'ACTION_SHEET=' + (p.showActionSheet ? 'yes' : 'no'),
   ]
   return parts.join(' ')
 }
