@@ -226,7 +226,26 @@ Page({
     this._startLinkTick()
     if (this.client.status === 'online') {
       this.refresh()
-    } else {
+    } else if (!this.client.sock) {
+      /**
+       * **只在真的没有 socket 时才重连**（2026-10-07 修）。
+       *
+       * 原来这里是 `else { this.client.connect() }`，而 `connect()` 会先
+       * `close()` 掉旧 socket 再造一个新的、**退避重置为 0** 的。
+       *
+       * 症状：退避被反复打回零。在 会话列表↔聊天 之间来回切时（每次切换
+       * 都走一遍 onShow），只要当前不在线就重连一次 ⇒ 指数退避（1s→30s）
+       * 永远顶格在 1s。这不只是"重连勤了一点"：退避存在的意义就是别在中继
+       * 拒收时 hammer 它，而顶格退避恰好把它变成 hammer。
+       *
+       * `app.js` 的 `onShow` 早就写对了（`&& !this.drc.sock`），唯独这里没有 ——
+       * 两处不一致正是它一直没被发现的原因。
+       *
+       * ⚠️ 判据是 `!sock` 而不是 `status === 'connecting'`：正在重连时
+       **已经有** socket 了（`createSocket` 立刻赋值），所以这一支自然不走。
+       * 用 status 判会在"socket 在、状态是 connecting"时**再**造一个 ——
+       * 那正是原来那个 bug 的另一条路径。
+       */
       this.client.connect()
     }
   },
@@ -304,8 +323,27 @@ Page({
           busy: false,
           creating: false,
           sessions: [],
-          hiddenArchived: 0,
-          hiddenText: '',
+          /**
+           * 归零**每一个**"这一页从主机读来的量"（2026-10-07 补）。
+           *
+           * 原来这里只清了 sessions / hiddenArchived / hiddenText，而这三个
+           * 里 hiddenArchived / hiddenText 在 2026-10-07 那轮已经**不再被写**
+           * （归档改成单独一组，见 _renderSessions）—— 于是这一支实际上只清了
+           * sessions，而 `archivedSessions` / `archivedCount` / `pending` /
+           * `pendingCount` / `archivingId` 全部留着上一台主机的数据。
+           *
+           * 今天看不出来，只因为 wxml 靠 `wx:if="{{paired}}"` 把它们遮住了。
+           * 而那一层遮蔽是**巧合**而不是设计：模板分支一改（或者将来加一个
+           * 不在 paired 块里的只读区），就是"已解配却还列着上一台主机的会话"。
+           *
+           * 规则：**解配 = 这一页归零**。凡是"从主机读来的量"都在这张单子里，
+           * 而这张单子要能被一条判据数出来（见 e2e 的 needs-pair 归零那条）。
+           */
+          archivedSessions: [],
+          archivedCount: 0,
+          archivingId: '',
+          pending: [],
+          pendingCount: 0,
           // **不自动展开手动输入**（2026-10-05 用户：全部场景默认收起）。
           // 原来这里写死 manualOpen:true，于是"解配后重新连"必然顶开一整片
           // 输入控件——用户说的就是这条。
@@ -846,6 +884,24 @@ Page({
     })
   },
 
+  /**
+   * 新建会话。`picked` 是**工作区路径**（长按那条路传进来的），不是事件对象。
+   *
+   * ⚠️ 2026-10-07 修一个真实的缺陷：wxml 上是 `bindtap="onNewSession"`，
+   * 而 bindtap 会把**事件对象**当第一个实参传进来 —— 于是 `picked` 恒为真值，
+   * 下面那句 `picked || this._currentWorkspace()` 的三级兜底
+   * （① 最后点开的那条会话的工作区 ② 列表里第一个非空分组 ③ 不带这个字段）
+   * **永远走不到**，每次单击都往主机发一个名为 `[object Object]` 的工作区。
+   *
+   * 症状特别难查：`String({})` 是 `'[object Object]'`，它不是空串所以
+   * `if (workspace) cmd.workspace = ...` 会照发；主机侧 `badWorkspace()` 收到
+   * 一个不存在的目录，会话落错地方或被拒，而**回执路径上没有任何提示**
+   * （`newSession` 只看 `res.ok`，而这条路径返回 ok:true 或一句读不懂的话）。
+   * 唯一能工作的是长按那条路——它传的是真字符串。
+   *
+   * 修法是**判类型**而不是改 wxml（改 wxml 要多一个入口，而 `wx.navigateTo`
+   * 那套已经够用）：只在它真的是字符串时才当成"用户显式指定的工作区"。
+   */
   onNewSession: function (picked) {
     var self = this
     if (this.data.creating) return
@@ -864,7 +920,9 @@ Page({
     // 为什么要有默认：用户点「＋新建会话」时心里通常有一个项目，而 DSH 的会话列表
     // 按目录分组 —— 落错分组的话，用户在电脑上翻不到这条新会话，而**手机这边
     // 全程没有任何提示**（回执照样 ok:true）。
-    var workspace = picked || this._currentWorkspace()
+    // `typeof picked === 'string'` 而不是 `!!picked`：bindtap 传进来的是事件对象，
+    // 它恒为真值。任何"看它是不是空"的写法都拦不住——必须看**类型**。
+    var workspace = (typeof picked === 'string' ? picked : '') || this._currentWorkspace()
     this.setData({ creating: true })
     var done = function (res) {
       self.setData({ creating: false })
